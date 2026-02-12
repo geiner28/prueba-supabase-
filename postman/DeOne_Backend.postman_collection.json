@@ -1,0 +1,613 @@
+{
+  "info": {
+    "name": "DeOne Backend",
+    "description": "Colección completa de endpoints del backend DeOne. Configurar variables de entorno antes de usar.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:3000/api" },
+    { "key": "bot_api_key", "value": "bot-secret-key-cambiar-en-produccion" },
+    { "key": "admin_api_key", "value": "admin-secret-key-cambiar-en-produccion" },
+    { "key": "telefono", "value": "+573001234567" },
+    { "key": "usuario_id", "value": "" },
+    { "key": "obligacion_id", "value": "" },
+    { "key": "factura_id", "value": "" },
+    { "key": "recarga_id", "value": "" },
+    { "key": "revision_id", "value": "" },
+    { "key": "pago_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "🏥 Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "👥 Usuarios",
+      "item": [
+        {
+          "name": "Crear / Upsert Usuario",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.collectionVariables.set('usuario_id', data.usuario_id);",
+                  "  console.log('usuario_id guardado:', data.usuario_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/users/upsert",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"nombre\": \"Geiner\",\n  \"apellido\": \"Martinez\",\n  \"correo\": \"geiner@deone.co\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Obtener Usuario por Teléfono",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" }
+            ],
+            "url": "{{base_url}}/users/by-telefono/{{telefono}}"
+          }
+        },
+        {
+          "name": "❌ Sin Auth (debe dar 401)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/users/by-telefono/{{telefono}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "📋 Obligaciones",
+      "item": [
+        {
+          "name": "Crear Obligación",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.collectionVariables.set('obligacion_id', data.id);",
+                  "  console.log('obligacion_id guardado:', data.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/obligaciones",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"servicio\": \"EPM Energia\",\n  \"tipo_referencia\": \"contrato\",\n  \"numero_referencia\": \"REF-001\",\n  \"periodicidad\": \"mensual\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Listar Obligaciones por Teléfono",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/obligaciones?telefono={{telefono}}",
+              "host": ["{{base_url}}"],
+              "path": ["obligaciones"],
+              "query": [
+                { "key": "telefono", "value": "{{telefono}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Actualizar Obligación",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/obligaciones/{{obligacion_id}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"estado\": \"inactiva\",\n  \"pagina_pago\": \"https://www.epm.com.co/pago\"\n}"
+            }
+          }
+        },
+        {
+          "name": "❌ Crear Obligación Duplicada (409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/obligaciones",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"servicio\": \"EPM Energia\",\n  \"tipo_referencia\": \"contrato\",\n  \"numero_referencia\": \"REF-001\",\n  \"periodicidad\": \"mensual\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "🧾 Facturas",
+      "item": [
+        {
+          "name": "Capturar Factura (extracción OK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.collectionVariables.set('factura_id', data.factura_id);",
+                  "  console.log('factura_id guardado:', data.factura_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/facturas/captura",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"obligacion_id\": \"{{obligacion_id}}\",\n  \"periodo\": \"2026-02-15\",\n  \"monto\": 150000,\n  \"fecha_vencimiento\": \"2026-03-01\",\n  \"origen\": \"imagen\",\n  \"extraccion_estado\": \"ok\",\n  \"extraccion_confianza\": 0.95\n}"
+            }
+          }
+        },
+        {
+          "name": "Capturar Factura (extracción DUDOSA)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.globals.set('factura_dudosa_id', data.factura_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/facturas/captura",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"obligacion_id\": \"{{obligacion_id}}\",\n  \"periodo\": \"2026-03-01\",\n  \"monto\": 80000,\n  \"fecha_vencimiento\": \"2026-04-01\",\n  \"origen\": \"imagen\",\n  \"extraccion_estado\": \"dudosa\",\n  \"extraccion_confianza\": 0.35,\n  \"extraccion_json\": { \"raw\": \"texto borroso extraido\" }\n}"
+            }
+          }
+        },
+        {
+          "name": "Validar Factura (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/facturas/{{factura_id}}/validar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"monto\": 150000,\n  \"fecha_vencimiento\": \"2026-03-01\",\n  \"fecha_emision\": \"2026-02-01\",\n  \"observaciones_admin\": \"Datos verificados correctamente\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Rechazar Factura (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/facturas/{{factura_id}}/rechazar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"motivo_rechazo\": \"Imagen ilegible, datos no verificables\"\n}"
+            }
+          }
+        },
+        {
+          "name": "❌ Validar factura ya validada (409)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/facturas/{{factura_id}}/validar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"monto\": 150000,\n  \"fecha_vencimiento\": \"2026-03-01\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "💰 Recargas",
+      "item": [
+        {
+          "name": "Reportar Recarga",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.collectionVariables.set('recarga_id', data.recarga_id);",
+                  "  console.log('recarga_id guardado:', data.recarga_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/recargas/reportar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"periodo\": \"2026-02-01\",\n  \"monto\": 300000,\n  \"comprobante_url\": \"comprobantes_recarga/user1/2026-02/rec1.jpg\",\n  \"referencia_tx\": \"TX-PSE-12345\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Reportar Recarga (idempotencia - misma ref_tx)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/recargas/reportar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"periodo\": \"2026-02-01\",\n  \"monto\": 300000,\n  \"comprobante_url\": \"comprobantes_recarga/user1/2026-02/rec1.jpg\",\n  \"referencia_tx\": \"TX-PSE-12345\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Aprobar Recarga (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/recargas/{{recarga_id}}/aprobar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"observaciones_admin\": \"Comprobante verificado correctamente\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Rechazar Recarga (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/recargas/{{recarga_id}}/rechazar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"motivo_rechazo\": \"Comprobante borroso, no se puede verificar monto\"\n}"
+            }
+          }
+        },
+        {
+          "name": "❌ Aprobar ya aprobada (409)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/recargas/{{recarga_id}}/aprobar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"observaciones_admin\": \"Doble intento\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "🔍 Revisiones Admin",
+      "item": [
+        {
+          "name": "Listar Revisiones (todas)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  var data = pm.response.json().data;",
+                  "  var pending = data.filter(r => r.estado === 'pendiente');",
+                  "  if (pending.length > 0) {",
+                  "    pm.collectionVariables.set('revision_id', pending[0].id);",
+                  "    console.log('revision_id guardado:', pending[0].id);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" }
+            ],
+            "url": "{{base_url}}/revisiones"
+          }
+        },
+        {
+          "name": "Listar Revisiones Pendientes",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/revisiones?estado=pendiente",
+              "host": ["{{base_url}}"],
+              "path": ["revisiones"],
+              "query": [
+                { "key": "estado", "value": "pendiente" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Listar Revisiones por Tipo (factura)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/revisiones?tipo=factura",
+              "host": ["{{base_url}}"],
+              "path": ["revisiones"],
+              "query": [
+                { "key": "tipo", "value": "factura" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Listar Revisiones por Tipo (recarga)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/revisiones?tipo=recarga",
+              "host": ["{{base_url}}"],
+              "path": ["revisiones"],
+              "query": [
+                { "key": "tipo", "value": "recarga" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Tomar Revisión",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" }
+            ],
+            "url": "{{base_url}}/revisiones/{{revision_id}}/tomar"
+          }
+        },
+        {
+          "name": "Descartar Revisión",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/revisiones/{{revision_id}}/descartar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"razon\": \"Ya se resolvió por otro canal\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "📈 Disponibilidad",
+      "item": [
+        {
+          "name": "Consultar Disponibilidad",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/disponible?telefono={{telefono}}&periodo=2026-02-01",
+              "host": ["{{base_url}}"],
+              "path": ["disponible"],
+              "query": [
+                { "key": "telefono", "value": "{{telefono}}" },
+                { "key": "periodo", "value": "2026-02-01" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "💳 Pagos",
+      "item": [
+        {
+          "name": "Crear Pago",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  var data = pm.response.json().data;",
+                  "  pm.collectionVariables.set('pago_id', data.pago_id);",
+                  "  console.log('pago_id guardado:', data.pago_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/pagos/crear",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"factura_id\": \"{{factura_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Confirmar Pago",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/pagos/{{pago_id}}/confirmar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"proveedor_pago\": \"PSE\",\n  \"referencia_pago\": \"PSE-REF-99887\",\n  \"comprobante_pago_url\": \"comprobantes_pago/user1/2026-02/pago1.pdf\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Marcar Pago como Fallido",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/pagos/{{pago_id}}/fallar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"error_detalle\": \"Timeout en pasarela de pago, reintentar\"\n}"
+            }
+          }
+        },
+        {
+          "name": "❌ Crear pago con fondos insuficientes",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/pagos/crear",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"telefono\": \"{{telefono}}\",\n  \"factura_id\": \"{{factura_id}}\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "🚫 Edge Cases",
+      "item": [
+        {
+          "name": "Ruta inexistente (404)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/ruta-que-no-existe"
+          }
+        },
+        {
+          "name": "Usuario inexistente (404)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "x-admin-api-key", "value": "{{admin_api_key}}" }
+            ],
+            "url": "{{base_url}}/users/by-telefono/+570000000000"
+          }
+        },
+        {
+          "name": "Validación - body vacío (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-bot-api-key", "value": "{{bot_api_key}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/users/upsert",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

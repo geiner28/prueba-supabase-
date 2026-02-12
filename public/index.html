@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeOne Admin Panel</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h1>⚡ DeOne</h1>
+      <span class="badge badge-info">Admin</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-module="dashboard" onclick="navigate('dashboard')">
+        <span class="nav-icon">📊</span> Dashboard
+      </a>
+      <a href="#" class="nav-item" data-module="usuarios" onclick="navigate('usuarios')">
+        <span class="nav-icon">👥</span> Usuarios
+      </a>
+      <a href="#" class="nav-item" data-module="obligaciones" onclick="navigate('obligaciones')">
+        <span class="nav-icon">📋</span> Obligaciones
+      </a>
+      <a href="#" class="nav-item" data-module="facturas" onclick="navigate('facturas')">
+        <span class="nav-icon">🧾</span> Facturas
+      </a>
+      <a href="#" class="nav-item" data-module="recargas" onclick="navigate('recargas')">
+        <span class="nav-icon">💰</span> Recargas
+      </a>
+      <a href="#" class="nav-item" data-module="revisiones" onclick="navigate('revisiones')">
+        <span class="nav-icon">🔍</span> Revisiones
+      </a>
+      <a href="#" class="nav-item" data-module="pagos" onclick="navigate('pagos')">
+        <span class="nav-icon">💳</span> Pagos
+      </a>
+      <a href="#" class="nav-item" data-module="disponibilidad" onclick="navigate('disponibilidad')">
+        <span class="nav-icon">📈</span> Disponibilidad
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="server-status" id="serverStatus">
+        <span class="status-dot"></span> Conectando...
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <header class="top-bar">
+      <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+      <h2 id="pageTitle">Dashboard</h2>
+      <div class="top-actions" id="topActions"></div>
+    </header>
+
+    <div class="content" id="content">
+      <!-- Dynamic content injected here -->
+    </div>
+  </main>
+
+  <!-- Modal -->
+  <div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="modalTitle">Modal</h3>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
