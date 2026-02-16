@@ -3,6 +3,10 @@
 // ===========================================
 
 const transitions = {
+  obligaciones: {
+    activa: ["en_progreso", "cancelada"],
+    en_progreso: ["completada", "cancelada"],
+  },
   recargas: {
     reportada: ["en_validacion"],
     en_validacion: ["aprobada", "rechazada"],

@@ -61,6 +61,40 @@ async function upsertUser({ telefono, nombre, apellido, correo }) {
 }
 
 /**
+ * Actualizar el plan de un usuario
+ */
+async function updateUserPlan({ telefono, plan }) {
+  // 1. Buscar usuario existente
+  const { data: existing, error: findErr } = await supabase
+    .from("usuarios")
+    .select("*")
+    .eq("telefono", telefono)
+    .single();
+
+  if (findErr || !existing) {
+    return errors.notFound(`Usuario con teléfono ${telefono} no encontrado`);
+  }
+
+  // 2. Actualizar plan
+  const { data: updated, error: updateErr } = await supabase
+    .from("usuarios")
+    .update({ plan })
+    .eq("id", existing.id)
+    .select()
+    .single();
+
+  if (updateErr) throw new Error(`Error actualizando plan: ${updateErr.message}`);
+
+  return success({
+    usuario_id: updated.id,
+    telefono: updated.telefono,
+    plan_anterior: existing.plan,
+    plan_nuevo: updated.plan,
+    actualizado_en: updated.updated_at
+  });
+}
+
+/**
  * Obtener usuario por teléfono con ajustes.
  */
 async function getUserByTelefono(telefono) {
@@ -77,4 +111,4 @@ async function getUserByTelefono(telefono) {
   return success(data);
 }
 
-module.exports = { upsertUser, getUserByTelefono };
+module.exports = { upsertUser, updateUserPlan, getUserByTelefono };

@@ -4,7 +4,7 @@
 const { Router } = require("express");
 const { authBotOrAdmin, authAdmin } = require("../../middleware/auth");
 const { validateBody } = require("../../middleware/validate");
-const { upsertUserSchema } = require("./users.schema");
+const { upsertUserSchema, updatePlanSchema } = require("./users.schema");
 const usersService = require("./users.service");
 
 const router = Router();
@@ -13,6 +13,16 @@ const router = Router();
 router.post("/upsert", authBotOrAdmin, validateBody(upsertUserSchema), async (req, res, next) => {
   try {
     const result = await usersService.upsertUser(req.validatedBody);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/users/plan
+router.put("/plan", authBotOrAdmin, validateBody(updatePlanSchema), async (req, res, next) => {
+  try {
+    const result = await usersService.updateUserPlan(req.validatedBody);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);
