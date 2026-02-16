@@ -4,7 +4,8 @@
 // ===========================================
 
 const API_BASE = '/api';
-const AUTH_TOKEN = 'TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3';
+const BOT_KEY   = 'TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3'; // Token único simplificado
+const ADMIN_KEY = 'TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3'; // Mismo token para ambos
 
 // ─── API helper ───
 async function api(method, path, body = null, useBot = false) {
@@ -12,7 +13,7 @@ async function api(method, path, body = null, useBot = false) {
     method,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${AUTH_TOKEN}`,
+      [useBot ? 'x-bot-api-key' : 'x-admin-api-key']: useBot ? BOT_KEY : ADMIN_KEY,
     },
   };
   if (body) opts.body = JSON.stringify(body);
