@@ -5,6 +5,39 @@ const supabase = require("../../config/supabase");
 const { success, errors } = require("../../utils/response");
 
 /**
+ * Listar usuarios con paginación y búsqueda.
+ */
+async function listUsers(query = {}) {
+  const page = parseInt(query.page, 10) || 1;
+  const limit = Math.min(parseInt(query.limit, 10) || 20, 100);
+  const offset = (page - 1) * limit;
+  const search = query.search || null;
+  const plan = query.plan || null;
+
+  let dbQuery = supabase
+    .from("usuarios")
+    .select("*, ajustes_usuario(*)", { count: "exact" })
+    .order("creado_en", { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (plan) dbQuery = dbQuery.eq("plan", plan);
+  if (search) {
+    dbQuery = dbQuery.or(`nombre.ilike.%${search}%,telefono.ilike.%${search}%,correo.ilike.%${search}%`);
+  }
+
+  const { data, error, count } = await dbQuery;
+  if (error) throw new Error(`Error listando usuarios: ${error.message}`);
+
+  return success({
+    usuarios: data,
+    total: count,
+    page,
+    limit,
+    total_pages: Math.ceil((count || 0) / limit),
+  });
+}
+
+/**
  * Upsert: busca por teléfono; si existe actualiza, si no crea usuario + ajustes.
  */
 async function upsertUser({ telefono, nombre, apellido, correo }) {
@@ -111,4 +144,4 @@ async function getUserByTelefono(telefono) {
   return success(data);
 }
 
-module.exports = { upsertUser, updateUserPlan, getUserByTelefono };
+module.exports = { listUsers, upsertUser, updateUserPlan, getUserByTelefono };

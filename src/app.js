@@ -18,6 +18,8 @@ const recargasRoutes = require("./modules/recargas/recargas.routes");
 const revisionesRoutes = require("./modules/revisiones/revisiones.routes");
 const disponibilidadRoutes = require("./modules/disponibilidad/disponibilidad.routes");
 const pagosRoutes = require("./modules/pagos/pagos.routes");
+const notificacionesRoutes = require("./modules/notificaciones/notificaciones.routes");
+const adminRoutes = require("./modules/admin/admin.routes");
 
 const app = express();
 
@@ -60,6 +62,8 @@ app.use("/api/recargas", recargasRoutes);
 app.use("/api/revisiones", revisionesRoutes);
 app.use("/api/disponible", disponibilidadRoutes);
 app.use("/api/pagos", pagosRoutes);
+app.use("/api/notificaciones", notificacionesRoutes);
+app.use("/api/admin", adminRoutes);
 
 // ===========================================
 // 404

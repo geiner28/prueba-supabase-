@@ -9,6 +9,16 @@ const usersService = require("./users.service");
 
 const router = Router();
 
+// GET /api/users — Listar todos los usuarios (paginado + búsqueda)
+router.get("/", authAdmin, async (req, res, next) => {
+  try {
+    const result = await usersService.listUsers(req.query);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/users/upsert
 router.post("/upsert", authBotOrAdmin, validateBody(upsertUserSchema), async (req, res, next) => {
   try {

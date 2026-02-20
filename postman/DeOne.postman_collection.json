@@ -1,0 +1,157 @@
+{
+  "info": {
+    "name": "DeOne - API Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Accept", "value": "application/json" }
+        ],
+        "url": { "raw": "{{baseUrl}}/api/health", "host": ["{{baseUrl}}"], "path": ["api","health"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Create / Upsert User",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-admin-api-key", "value": "{{ADMIN_KEY}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"telefono\": \"{{TEL}}\",\n  \"nombre\": \"Prueba\",\n  \"apellido\": \"Prod\"\n}" },
+        "url": { "raw": "{{baseUrl}}/api/users/upsert", "host": ["{{baseUrl}}"], "path": ["api","users","upsert"] }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.data && j.data.usuario_id) pm.environment.set('USER_ID', j.data.usuario_id);",
+              "pm.test('status is 2xx', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Create Obligación",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-bot-api-key", "value": "{{BOT_KEY}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"telefono\": \"{{TEL}}\",\n  \"descripcion\": \"Pagos Test Postman\",\n  \"periodo\": \"2026-03-01\"\n}" },
+        "url": { "raw": "{{baseUrl}}/api/obligaciones", "host": ["{{baseUrl}}"], "path": ["api","obligaciones"] }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.data && j.data.id) pm.environment.set('OBL_ID', j.data.id);",
+              "pm.test('status is 201 or 200', () => pm.expect(pm.response.code).to.be.oneOf([200,201]));"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Capturar Factura",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-bot-api-key", "value": "{{BOT_KEY}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"telefono\": \"{{TEL}}\",\n  \"obligacion_id\": \"{{OBL_ID}}\",\n  \"servicio\": \"EPM Energía\",\n  \"monto\": 100000\n}" },
+        "url": { "raw": "{{baseUrl}}/api/facturas/captura", "host": ["{{baseUrl}}"], "path": ["api","facturas","captura"] }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.data && (j.data.factura_id || j.data.id)) pm.environment.set('FACT_ID', j.data.factura_id || j.data.id);",
+              "pm.test('status is 201 or 200', () => pm.expect(pm.response.code).to.be.oneOf([200,201]));"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Listar Facturas por Obligación",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "x-bot-api-key", "value": "{{BOT_KEY}}" } ],
+        "url": { "raw": "{{baseUrl}}/api/facturas/obligacion/{{OBL_ID}}", "host": ["{{baseUrl}}"], "path": ["api","facturas","obligacion","{{OBL_ID}}"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Reportar Recarga (Bot)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-bot-api-key", "value": "{{BOT_KEY}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"telefono\": \"{{TEL}}\",\n  \"periodo\": \"2026-03-01\",\n  \"monto\": 200000,\n  \"comprobante_url\": \"https://example.com/comprobante.jpg\"\n}" },
+        "url": { "raw": "{{baseUrl}}/api/recargas/reportar", "host": ["{{baseUrl}}"], "path": ["api","recargas","reportar"] }
+      },
+      "event": [ { "listen": "test", "script": { "exec": [ "const j = pm.response.json();", "if (j && j.data && (j.data.recarga_id || j.data.id)) pm.environment.set('REC_ID', j.data.recarga_id || j.data.id);", "pm.test('status is 201 or 200', () => pm.expect(pm.response.code).to.be.oneOf([200,201]));" ] } } ],
+      "response": []
+    },
+    {
+      "name": "Aprobar Recarga (Admin)",
+      "request": {
+        "method": "PUT",
+        "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "x-admin-api-key", "value": "{{ADMIN_KEY}}" } ],
+        "body": { "mode": "raw", "raw": "{}" },
+        "url": { "raw": "{{baseUrl}}/api/recargas/{{REC_ID}}/aprobar", "host": ["{{baseUrl}}"], "path": ["api","recargas","{{REC_ID}}","aprobar"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Crear Pago (Admin)",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "x-admin-api-key", "value": "{{ADMIN_KEY}}" } ],
+        "body": { "mode": "raw", "raw": "{\n  \"telefono\": \"{{TEL}}\",\n  \"factura_id\": \"{{FACT_ID}}\"\n}" },
+        "url": { "raw": "{{baseUrl}}/api/pagos/crear", "host": ["{{baseUrl}}"], "path": ["api","pagos","crear"] }
+      },
+      "event": [ { "listen": "test", "script": { "exec": [ "const j = pm.response.json();", "if (j && j.data && (j.data.pago_id || j.data.id)) pm.environment.set('PAGO_ID', j.data.pago_id || j.data.id);", "pm.test('status is 201 or 200', () => pm.expect(pm.response.code).to.be.oneOf([200,201]));" ] } } ],
+      "response": []
+    },
+    {
+      "name": "Confirmar Pago (Admin)",
+      "request": {
+        "method": "PUT",
+        "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "x-admin-api-key", "value": "{{ADMIN_KEY}}" } ],
+        "body": { "mode": "raw", "raw": "{\n  \"proveedor_pago\": \"PSE\",\n  \"referencia_pago\": \"TEST123\"\n}" },
+        "url": { "raw": "{{baseUrl}}/api/pagos/{{PAGO_ID}}/confirmar", "host": ["{{baseUrl}}"], "path": ["api","pagos","{{PAGO_ID}}","confirmar"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Detalle Obligación",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "x-bot-api-key", "value": "{{BOT_KEY}}" } ],
+        "url": { "raw": "{{baseUrl}}/api/obligaciones/{{OBL_ID}}", "host": ["{{baseUrl}}"], "path": ["api","obligaciones","{{OBL_ID}}"] }
+      },
+      "response": []
+    }
+  ]
+}

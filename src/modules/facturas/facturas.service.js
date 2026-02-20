@@ -9,6 +9,7 @@ const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
 const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
+const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
 
 /**
  * Capturar factura (registrar un servicio dentro de una obligación).
@@ -163,6 +164,19 @@ async function validarFactura(facturaId, body, adminId) {
     antes, despues: updated,
   });
 
+  // Notificar al usuario
+  await crearNotificacionInterna({
+    usuario_id: factura.usuario_id,
+    tipo: "factura_validada",
+    canal: "whatsapp",
+    payload: {
+      factura_id: facturaId,
+      servicio: updated.servicio,
+      monto,
+      mensaje: `Tu factura de ${updated.servicio} por $${Number(monto).toLocaleString()} ha sido validada y está lista para pago.`,
+    },
+  });
+
   return success({ factura_id: facturaId, servicio: updated.servicio, estado: "validada" });
 }
 
@@ -215,6 +229,19 @@ async function rechazarFactura(facturaId, body, adminId) {
     actor_tipo: "admin", actor_id: adminId,
     accion: "rechazar_factura", entidad: "facturas", entidad_id: facturaId,
     antes, despues: updated,
+  });
+
+  // Notificar al usuario
+  await crearNotificacionInterna({
+    usuario_id: factura.usuario_id,
+    tipo: "factura_rechazada",
+    canal: "whatsapp",
+    payload: {
+      factura_id: facturaId,
+      servicio: factura.servicio,
+      motivo: motivo_rechazo,
+      mensaje: `Tu factura de ${factura.servicio || "servicio"} fue rechazada. Motivo: ${motivo_rechazo}`,
+    },
   });
 
   return success({ factura_id: facturaId, estado: "rechazada" });

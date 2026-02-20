@@ -7,6 +7,7 @@ const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
 const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
+const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
 
 /**
  * Reportar recarga (desde el bot).
@@ -131,6 +132,19 @@ async function aprobarRecarga(recargaId, body, adminId) {
     despues: updated,
   });
 
+  // Notificar al usuario que su recarga fue aprobada
+  await crearNotificacionInterna({
+    usuario_id: recarga.usuario_id,
+    tipo: "recarga_aprobada",
+    canal: "whatsapp",
+    payload: {
+      recarga_id: recargaId,
+      monto: recarga.monto,
+      periodo: recarga.periodo,
+      mensaje: `Tu recarga de $${Number(recarga.monto).toLocaleString()} ha sido aprobada.`,
+    },
+  });
+
   return success(updated);
 }
 
@@ -186,6 +200,19 @@ async function rechazarRecarga(recargaId, body, adminId) {
     entidad_id: recargaId,
     antes,
     despues: updated,
+  });
+
+  // Notificar al usuario que su recarga fue rechazada
+  await crearNotificacionInterna({
+    usuario_id: recarga.usuario_id,
+    tipo: "recarga_rechazada",
+    canal: "whatsapp",
+    payload: {
+      recarga_id: recargaId,
+      monto: recarga.monto,
+      motivo: body.motivo_rechazo,
+      mensaje: `Tu recarga de $${Number(recarga.monto).toLocaleString()} fue rechazada. Motivo: ${body.motivo_rechazo}`,
+    },
   });
 
   return success(updated);
