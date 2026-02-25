@@ -41,7 +41,7 @@ async function capturaFactura(body, actorTipo = "bot") {
   const periodoNorm = normalizarPeriodo(periodo || obligacion.periodo);
 
   // 4. Determinar si requiere revisión
-  const requiereRevision = ["dudosa", "fallida"].includes(extraccion_estado);
+  const requiereRevision = ["dudosa", "fallida"].includes(extraccion_estado) || monto == null;
   const estadoFactura = requiereRevision ? "en_revision" : "extraida";
 
   // 5. Crear factura
@@ -54,7 +54,7 @@ async function capturaFactura(body, actorTipo = "bot") {
       periodo: periodoNorm,
       fecha_emision: fecha_emision || null,
       fecha_vencimiento: fecha_vencimiento || null,
-      monto,
+      monto: monto != null ? monto : null,
       estado: estadoFactura,
       origen: origen || null,
       archivo_url: archivo_url || null,
