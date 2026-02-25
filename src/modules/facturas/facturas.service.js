@@ -18,7 +18,8 @@ async function capturaFactura(body, actorTipo = "bot") {
   const {
     telefono, obligacion_id, servicio, monto,
     fecha_vencimiento, fecha_emision, periodo,
-    origen, archivo_url, extraccion_estado, extraccion_json, extraccion_confianza
+    origen, archivo_url, referencia_pago,
+    extraccion_estado, extraccion_json, extraccion_confianza
   } = body;
 
   // 1. Resolver usuario
@@ -55,6 +56,7 @@ async function capturaFactura(body, actorTipo = "bot") {
       fecha_emision: fecha_emision || null,
       fecha_vencimiento: fecha_vencimiento || null,
       monto: monto != null ? monto : null,
+      referencia_pago: referencia_pago || null,
       estado: estadoFactura,
       origen: origen || null,
       archivo_url: archivo_url || null,
@@ -110,7 +112,7 @@ async function capturaFactura(body, actorTipo = "bot") {
  * Admin valida una factura.
  */
 async function validarFactura(facturaId, body, adminId) {
-  const { monto, fecha_vencimiento, fecha_emision, observaciones_admin } = body;
+  const { monto, fecha_vencimiento, fecha_emision, referencia_pago, observaciones_admin } = body;
 
   const { data: factura, error: findErr } = await supabase
     .from("facturas")
@@ -136,6 +138,7 @@ async function validarFactura(facturaId, body, adminId) {
   };
   if (fecha_vencimiento) updateData.fecha_vencimiento = fecha_vencimiento;
   if (fecha_emision) updateData.fecha_emision = fecha_emision;
+  if (referencia_pago !== undefined) updateData.referencia_pago = referencia_pago;
 
   const { data: updated, error: updateErr } = await supabase
     .from("facturas")
