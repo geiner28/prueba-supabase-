@@ -16,6 +16,7 @@ const capturaFacturaSchema = z.object({
   origen: z.string().nullable().optional(),
   archivo_url: z.string().nullable().optional(),
   referencia_pago: z.string().nullable().optional(),
+  etiqueta: z.string().nullable().optional(),
   extraccion_estado: z.enum(["ok", "dudosa", "fallida"]).default("ok"),
   extraccion_json: z.any().optional(),
   extraccion_confianza: z.number().min(0).max(1).nullable().optional(),
@@ -27,6 +28,7 @@ const validarFacturaSchema = z.object({
   fecha_vencimiento: z.string().optional(),
   fecha_emision: z.string().optional(),
   referencia_pago: z.string().nullable().optional(),
+  etiqueta: z.string().nullable().optional(),
   observaciones_admin: z.string().optional(),
 });
 
