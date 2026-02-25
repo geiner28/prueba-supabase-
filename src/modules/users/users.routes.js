@@ -39,10 +39,14 @@ router.put("/plan", authBotOrAdmin, validateBody(updatePlanSchema), async (req, 
   }
 });
 
-// GET /api/users/by-telefono/:telefono
-router.get("/by-telefono/:telefono", authAdmin, async (req, res, next) => {
+// GET /api/users/by-telefono/?telefono=573046757626
+router.get("/by-telefono/", authAdmin, async (req, res, next) => {
   try {
-    const result = await usersService.getUserByTelefono(req.params.telefono);
+    const { telefono } = req.query;
+    if (!telefono) {
+      return res.status(400).json({ ok: false, data: null, error: { code: "BAD_REQUEST", message: "El query parameter 'telefono' es requerido" } });
+    }
+    const result = await usersService.getUserByTelefono(telefono);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);
