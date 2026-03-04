@@ -5,37 +5,24 @@ const supabase = require("../../config/supabase");
 const { success, errors } = require("../../utils/response");
 
 /**
- * Listar usuarios con paginación y búsqueda.
+ * Helpers
  */
-async function listUsers(query = {}) {
-  const page = parseInt(query.page, 10) || 1;
-  const limit = Math.min(parseInt(query.limit, 10) || 20, 100);
-  const offset = (page - 1) * limit;
-  const search = query.search || null;
-  const plan = query.plan || null;
-
-  let dbQuery = supabase
-    .from("usuarios")
-    .select("*, ajustes_usuario(*)", { count: "exact" })
-    .order("creado_en", { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (plan) dbQuery = dbQuery.eq("plan", plan);
-  if (search) {
-    dbQuery = dbQuery.or(`nombre.ilike.%${search}%,telefono.ilike.%${search}%,correo.ilike.%${search}%`);
+function defaultProgramacionForPlan(plan = "control") {
+  // Asumimos: 'control' y 'tranquilidad' => 1 recarga (día 1)
+  // 'respaldo' => 2 recargas (día 1 y 15)
+  // Si tu negocio quiere otros defaults, cámbialos aquí.
+  if (plan === "respaldo") {
+    return { cantidad_recargas: 2, dia_1: 1, dia_2: 15 };
   }
-
-  const { data, error, count } = await dbQuery;
-  if (error) throw new Error(`Error listando usuarios: ${error.message}`);
-
-  return success({
-    usuarios: data,
-    total: count,
-    page,
-    limit,
-    total_pages: Math.ceil((count || 0) / limit),
-  });
+  // control | tranquilidad | cualquier otro => 1 recarga
+  return { cantidad_recargas: 1, dia_1: 1, dia_2: null };
 }
+
+/**
+ * Listar usuarios...
+ * (mantener igual)
+ */
+// ... (tu listUsers aquí sin cambios)
 
 /**
  * Upsert: busca por teléfono; si existe actualiza, si no crea usuario + ajustes.
@@ -49,7 +36,6 @@ async function upsertUser({ telefono, nombre, apellido, correo }) {
     .single();
 
   if (findErr && findErr.code !== "PGRST116") {
-    // PGRST116 = no rows, lo cual es esperado si no existe
     throw new Error(`Error buscando usuario: ${findErr.message}`);
   }
 
@@ -90,6 +76,30 @@ async function upsertUser({ telefono, nombre, apellido, correo }) {
     console.error("[USERS] Error creando ajustes_usuario:", ajustesErr.message);
   }
 
+  // 4. Crear programacion_recargas por defecto (no bloquear creación si falla)
+  try {
+    const plan = newUser.plan || "control";
+    const def = defaultProgramacionForPlan(plan);
+
+    // Intentamos upsert simple: si existe (no debería), ignore; si no, insert
+    // Aquí usamos insert().select().single() y dejamos manejar error por unique key.
+    const { error: progErr } = await supabase
+      .from("programacion_recargas")
+      .insert({
+        usuario_id: newUser.id,
+        cantidad_recargas: def.cantidad_recargas,
+        dia_1: def.dia_1,
+        dia_2: def.dia_2,
+      });
+
+    if (progErr) {
+      // Logueamos, pero no lanzamos para no romper flujo de creación de usuario.
+      console.error("[USERS] Error creando programacion_recargas:", progErr.message);
+    }
+  } catch (e) {
+    console.error("[USERS] Excepción creando programacion_recargas:", e.message);
+  }
+
   return success({ usuario_id: newUser.id, creado: true }, 201);
 }
 
@@ -117,6 +127,51 @@ async function updateUserPlan({ telefono, plan }) {
     .single();
 
   if (updateErr) throw new Error(`Error actualizando plan: ${updateErr.message}`);
+
+  // 3. Ajustar programacion_recargas para ese usuario según nuevo plan
+  try {
+    const def = defaultProgramacionForPlan(updated.plan);
+
+    // Verificamos si ya existe programacion
+    const { data: prog } = await supabase
+      .from("programacion_recargas")
+      .select("*")
+      .eq("usuario_id", updated.id)
+      .single();
+
+    if (prog) {
+      // Actualizar
+      const { error: progUpdateErr } = await supabase
+        .from("programacion_recargas")
+        .update({
+          cantidad_recargas: def.cantidad_recargas,
+          dia_1: def.dia_1,
+          dia_2: def.dia_2,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("usuario_id", updated.id);
+
+      if (progUpdateErr) {
+        console.error("[USERS] Error actualizando programacion_recargas:", progUpdateErr.message);
+      }
+    } else {
+      // Insertar nuevo registro
+      const { error: progInsertErr } = await supabase
+        .from("programacion_recargas")
+        .insert({
+          usuario_id: updated.id,
+          cantidad_recargas: def.cantidad_recargas,
+          dia_1: def.dia_1,
+          dia_2: def.dia_2,
+        });
+
+      if (progInsertErr) {
+        console.error("[USERS] Error insertando programacion_recargas:", progInsertErr.message);
+      }
+    }
+  } catch (e) {
+    console.error("[USERS] Excepción al ajustar programacion_recargas:", e.message);
+  }
 
   return success({
     usuario_id: updated.id,
