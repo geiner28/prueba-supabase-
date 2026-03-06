@@ -29,6 +29,17 @@ router.get("/obligacion/:obligacionId", authBotOrAdmin, async (req, res, next) =
   }
 });
 
+// GET /api/facturas/validadas — Listar facturas validadas (opcionalmente por obligacion_id)
+router.get("/validadas", authBotOrAdmin, async (req, res, next) => {
+  try {
+    const { obligacion_id } = req.query;
+    const result = await service.listarFacturasValidadasPorObligacion(obligacion_id);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PUT /api/facturas/:id/validar — Admin valida factura
 router.put("/:id/validar", authAdmin, validateBody(validarFacturaSchema), async (req, res, next) => {
   try {
