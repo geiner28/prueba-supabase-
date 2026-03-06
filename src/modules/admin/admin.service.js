@@ -62,12 +62,14 @@ async function perfilCompletoCliente(telefono) {
     { data: recargas },
     { data: pagos },
     { data: notificaciones },
+    { data: programacion },
   ] = await Promise.all([
     supabase.from("usuarios").select("*, ajustes_usuario(*)").eq("id", userId).single(),
     supabase.from("obligaciones").select("*, facturas(*)").eq("usuario_id", userId).order("creado_en", { ascending: false }),
     supabase.from("recargas").select("*").eq("usuario_id", userId).order("creado_en", { ascending: false }),
     supabase.from("pagos").select("*, facturas(servicio, monto, periodo)").eq("usuario_id", userId).order("creado_en", { ascending: false }),
     supabase.from("notificaciones").select("*").eq("usuario_id", userId).order("creado_en", { ascending: false }).limit(20),
+    supabase.from("programacion_recargas").select("*").eq("usuario_id", userId).single(),
   ]);
 
   // Calcular totales
@@ -114,6 +116,7 @@ async function perfilCompletoCliente(telefono) {
     recargas,
     pagos,
     notificaciones_recientes: notificaciones,
+    programacion_recargas: programacion || null,
   });
 }
 
