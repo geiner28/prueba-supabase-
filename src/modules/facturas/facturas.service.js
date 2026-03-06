@@ -173,10 +173,11 @@ async function validarFactura(facturaId, body, adminId) {
     tipo: "factura_validada",
     canal: "whatsapp",
     payload: {
-      factura_id: facturaId,
-      servicio: updated.servicio,
+      etiqueta: updated.etiqueta || updated.servicio,
+      referencia_pago: updated.referencia_pago || null,
+      fecha_vencimiento: updated.fecha_vencimiento || null,
       monto,
-      mensaje: `Tu factura de ${updated.servicio} por $${Number(monto).toLocaleString()} ha sido validada y está lista para pago.`,
+      mensaje: `Tu factura de ${updated.etiqueta || updated.servicio} por $${Number(monto).toLocaleString()} ha sido validada y está lista para pago.`,
     },
   });
 
@@ -265,6 +266,27 @@ async function listarFacturasPorObligacion(obligacionId) {
 }
 
 /**
+ * Listar facturas validadas agrupadas por obligación.
+ * Solo devuelve: etiqueta, referencia_pago, fecha_vencimiento, obligacion_id
+ */
+async function listarFacturasValidadasPorObligacion(obligacionId) {
+  let query = supabase
+    .from("facturas")
+    .select("id, etiqueta, referencia_pago, fecha_vencimiento, obligacion_id")
+    .eq("estado", "validada");
+
+  if (obligacionId) {
+    query = query.eq("obligacion_id", obligacionId);
+  }
+
+  const { data, error } = await query.order("fecha_vencimiento", { ascending: true });
+
+  if (error) throw new Error(`Error listando facturas validadas: ${error.message}`);
+
+  return success(data);
+}
+
+/**
  * Actualizar contadores de una obligación basado en sus facturas.
  */
 async function actualizarContadoresObligacion(obligacionId) {
@@ -306,5 +328,6 @@ module.exports = {
   validarFactura,
   rechazarFactura,
   listarFacturasPorObligacion,
+  listarFacturasValidadasPorObligacion,
   actualizarContadoresObligacion,
 };
