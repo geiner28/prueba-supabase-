@@ -261,7 +261,27 @@ async function listarFacturasPorObligacion(obligacionId) {
     .order("creado_en", { ascending: true });
 
   if (error) throw new Error(`Error listando facturas: ${error.message}`);
-  return success(data);
+  // Mapear para devolver referencia_pago como campo principal
+  const facturas = (data || []).map(f => ({
+    referencia_pago: f.referencia_pago,
+    servicio: f.servicio,
+    monto: f.monto,
+    estado: f.estado,
+    origen: f.origen,
+    archivo_url: f.archivo_url,
+    etiqueta: f.etiqueta,
+    fecha_emision: f.fecha_emision,
+    fecha_vencimiento: f.fecha_vencimiento,
+    periodo: f.periodo,
+    extraccion_estado: f.extraccion_estado,
+    extraccion_json: f.extraccion_json,
+    extraccion_confianza: f.extraccion_confianza,
+    observaciones_admin: f.observaciones_admin,
+    motivo_rechazo: f.motivo_rechazo,
+    // Si necesitas el id interno para uso técnico, puedes incluirlo como _id
+    _id: f.id
+  }));
+  return success(facturas);
 }
 
 /**
