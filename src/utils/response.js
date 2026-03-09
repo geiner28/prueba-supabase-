@@ -13,6 +13,7 @@ function error(code, message, details = null, statusCode = 500) {
 // Errores predefinidos
 const errors = {
   validation: (message, details) => error("VALIDATION_ERROR", message, details, 400),
+  badRequest: (message, details) => error("BAD_REQUEST", message, details, 400),
   unauthorized: (message = "No autorizado") => error("UNAUTHORIZED", message, null, 401),
   notFound: (message = "Recurso no encontrado") => error("NOT_FOUND", message, null, 404),
   conflict: (message = "Conflicto: recurso duplicado") => error("CONFLICT_DUPLICATE", message, null, 409),

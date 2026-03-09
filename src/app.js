@@ -20,6 +20,7 @@ const disponibilidadRoutes = require("./modules/disponibilidad/disponibilidad.ro
 const pagosRoutes = require("./modules/pagos/pagos.routes");
 const notificacionesRoutes = require("./modules/notificaciones/notificaciones.routes");
 const adminRoutes = require("./modules/admin/admin.routes");
+const solicitudesRecargaRoutes = require("./modules/solicitudes-recarga/solicitudes-recarga.routes");
 
 const app = express();
 
@@ -64,6 +65,7 @@ app.use("/api/disponible", disponibilidadRoutes);
 app.use("/api/pagos", pagosRoutes);
 app.use("/api/notificaciones", notificacionesRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/solicitudes-recarga", solicitudesRecargaRoutes);
 
 // ===========================================
 // 404
