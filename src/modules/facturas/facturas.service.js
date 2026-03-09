@@ -18,7 +18,7 @@ async function capturaFactura(body, actorTipo = "bot") {
   const {
     telefono, obligacion_id, servicio, monto,
     fecha_vencimiento, fecha_emision, periodo,
-    origen, archivo_url, referencia_pago,
+    origen, archivo_url, referencia_pago, etiqueta,
     extraccion_estado, extraccion_json, extraccion_confianza
   } = body;
 
@@ -57,6 +57,7 @@ async function capturaFactura(body, actorTipo = "bot") {
       fecha_vencimiento: fecha_vencimiento || null,
       monto: monto != null ? monto : null,
       referencia_pago: referencia_pago || null,
+      etiqueta: etiqueta || null,
       estado: estadoFactura,
       origen: origen || null,
       archivo_url: archivo_url || null,
