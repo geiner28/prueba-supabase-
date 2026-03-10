@@ -8,6 +8,10 @@ const { success, errors } = require("../../utils/response");
 const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { registrarAuditLog } = require("../../utils/auditLog");
 
+// Constantes para recordatorios
+const DIAS_ANTICIPACION_RECORDATORIO = 5;
+const DIAS_SIN_VENCIMIENTO = 15;
+
 // Importar la función interna (sin resolver teléfono)
 let crearNotificacionInterna;
 try {
@@ -60,9 +64,10 @@ async function generarSolicitudes(body) {
   }
 
   // 4. Obtener facturas VALIDADAS de la obligación
+  // Incluimos creado_en para calcular fecha_recordatorio de facturas sin fecha_vencimiento
   const { data: facturas, error: factErr } = await supabase
     .from("facturas")
-    .select("id, servicio, monto, fecha_vencimiento, estado")
+    .select("id, servicio, monto, fecha_vencimiento, estado, creado_en")
     .eq("obligacion_id", obligacion_id)
     .in("estado", ["validada", "extraida"])
     .order("fecha_vencimiento", { ascending: true });
@@ -398,18 +403,44 @@ async function actualizarFechasSolicitud(solicitudId, body) {
 // ===========================================
 
 /**
+ * Calcula la fecha de recordatorio para una factura.
+ * Si tiene fecha_vencimiento → fecha_vencimiento - 5 días
+ * Si NO tiene fecha_vencimiento → creado_en + 15 días
+ */
+function calcularFechaRecordatorioFactura(factura) {
+  if (factura.fecha_vencimiento) {
+    // Factura con vencimiento: 5 días antes del vencimiento
+    return restarDias(factura.fecha_vencimiento, DIAS_ANTICIPACION_RECORDATORIO);
+  } else {
+    // Factura sin vencimiento: 15 días después de creación
+    return sumarDias(factura.creado_en, DIAS_SIN_VENCIMIENTO);
+  }
+}
+
+/**
  * Para plan control: la fecha límite es la fecha de vencimiento
- * más próxima de todas las facturas (o el día 1 del periodo).
+ * más próxima de todas las facturas.
+ * 
+ * Para facturas sin fecha_vencimiento, se usa creado_en + 15 días.
+ * Se toma la fecha más próxima entre todas las facturas.
  */
 function calcularFechaLimiteCuota1(facturas, periodo) {
-  const facturasConFecha = facturas.filter(f => f.fecha_vencimiento);
-  if (facturasConFecha.length > 0) {
-    // La más pronta
-    facturasConFecha.sort((a, b) => new Date(a.fecha_vencimiento) - new Date(b.fecha_vencimiento));
-    return facturasConFecha[0].fecha_vencimiento;
+  if (!facturas || facturas.length === 0) {
+    return periodo;
   }
-  // Si no hay fechas, usar el día 1 del periodo
-  return periodo;
+
+  // Calcular fecha recordatorio para cada factura
+  const fechasRecordatorio = facturas.map(f => ({
+    factura: f,
+    fechaRecordatorio: calcularFechaRecordatorioFactura(f)
+  }));
+
+  // Ordenar por fecha de recordatorio (la más próxima primero)
+  fechasRecordatorio.sort((a, b) => new Date(a.fechaRecordatorio) - new Date(b.fechaRecordatorio));
+
+  // La fecha límite es 5 días después del recordatorio más próximo
+  // (porque fecha_recordatorio = fecha_limite - 5)
+  return sumarDias(fechasRecordatorio[0].fechaRecordatorio, DIAS_ANTICIPACION_RECORDATORIO);
 }
 
 /**
@@ -417,6 +448,8 @@ function calcularFechaLimiteCuota1(facturas, periodo) {
  * Cuota 1 → facturas que vencen del 1 al 15
  * Cuota 2 → facturas que vencen del 16 al 31
  * Si todas caen en la misma mitad → divide 50/50 por monto
+ * 
+ * Para facturas sin fecha_vencimiento, se usa su fecha de recordatorio (creado_en + 15 días).
  */
 function distribuirFacturasEnCuotas(facturas, periodo) {
   const periodoDate = new Date(periodo + "T00:00:00Z");
@@ -427,11 +460,13 @@ function distribuirFacturasEnCuotas(facturas, periodo) {
   const fechaLimite1 = formatFecha(new Date(Date.UTC(anio, mes, 1)));
   const fechaLimite2 = formatFecha(new Date(Date.UTC(anio, mes, 15)));
 
-  const cuota1 = { facturas: [], monto: 0, fechaLimite: fechaLimite1 };
-  const cuota2 = { facturas: [], monto: 0, fechaLimite: fechaLimite2 };
+  const cuota1 = { facturas: [], monto: 0, fechaLimite: fechaLimite1, fechaRecordatorio: restarDias(fechaLimite1, DIAS_ANTICIPACION_RECORDATORIO) };
+  const cuota2 = { facturas: [], monto: 0, fechaLimite: fechaLimite2, fechaRecordatorio: restarDias(fechaLimite2, DIAS_ANTICIPACION_RECORDATORIO) };
 
-  // Clasificar por fecha de vencimiento
+  // Clasificar por fecha de vencimiento o fecha de recordatorio
   for (const f of facturas) {
+    const fechaComparar = f.fecha_vencimiento || calcularFechaRecordatorioFactura(f);
+    
     if (f.fecha_vencimiento) {
       const dia = new Date(f.fecha_vencimiento + "T00:00:00Z").getUTCDate();
       if (dia <= 15) {
@@ -462,6 +497,13 @@ function distribuirFacturasEnCuotas(facturas, periodo) {
     if (conFecha.length > 0) {
       conFecha.sort((a, b) => new Date(a.fecha_vencimiento) - new Date(b.fecha_vencimiento));
       cuota1.fechaLimite = conFecha[0].fecha_vencimiento;
+      cuota1.fechaRecordatorio = restarDias(cuota1.fechaLimite, DIAS_ANTICIPACION_RECORDATORIO);
+    } else {
+      // Solo facturas sin vencimiento → usar la fecha de recordatorio más pronta
+      const fechasRecord = cuota1.facturas.map(f => calcularFechaRecordatorioFactura(f));
+      fechasRecord.sort((a, b) => new Date(a) - new Date(b));
+      cuota1.fechaRecordatorio = fechasRecord[0];
+      cuota1.fechaLimite = sumarDias(cuota1.fechaRecordatorio, DIAS_ANTICIPACION_RECORDATORIO);
     }
   }
 
@@ -471,6 +513,13 @@ function distribuirFacturasEnCuotas(facturas, periodo) {
     if (conFecha.length > 0) {
       conFecha.sort((a, b) => new Date(a.fecha_vencimiento) - new Date(b.fecha_vencimiento));
       cuota2.fechaLimite = conFecha[0].fecha_vencimiento;
+      cuota2.fechaRecordatorio = restarDias(cuota2.fechaLimite, DIAS_ANTICIPACION_RECORDATORIO);
+    } else {
+      // Solo facturas sin vencimiento → usar la fecha de recordatorio más pronta
+      const fechasRecord = cuota2.facturas.map(f => calcularFechaRecordatorioFactura(f));
+      fechasRecord.sort((a, b) => new Date(a) - new Date(b));
+      cuota2.fechaRecordatorio = fechasRecord[0];
+      cuota2.fechaLimite = sumarDias(cuota2.fechaRecordatorio, DIAS_ANTICIPACION_RECORDATORIO);
     }
   }
 
@@ -505,13 +554,205 @@ function restarDias(fechaStr, dias) {
   return formatFecha(fecha);
 }
 
+function sumarDias(fechaStr, dias) {
+  const fecha = new Date(fechaStr + "T00:00:00Z");
+  fecha.setUTCDate(fecha.getUTCDate() + dias);
+  return formatFecha(fecha);
+}
+
 function formatFecha(date) {
   return date.toISOString().split("T")[0];
+}
+
+/**
+ * Recalcula las solicitudes de recarga de una obligación.
+ * Actualiza únicamente las solicitudes en estado 'pendiente' o 'parcial'.
+ * No modifica solicitudes cumplidas, vencidas o canceladas.
+ * 
+ * Esta función debe llamarse cuando:
+ * - Se captura o valida una nueva factura
+ * - Se confirma un pago
+ * - Cambia el estado de una obligación
+ */
+async function recalcularSolicitudesPorObligacion(obligacionId) {
+  if (!obligacionId) {
+    console.error("[SOLICITUDES_RECARGA] obligacionId requerido para recalcular");
+    return null;
+  }
+
+  // 1. Obtener la obligación y su usuario
+  const { data: obligacion, error: oblErr } = await supabase
+    .from("obligaciones")
+    .select("*, usuarios!inner(id, plan)")
+    .eq("id", obligacionId)
+    .single();
+
+  if (oblErr || !obligacion) {
+    console.error("[SOLICITUDES_RECARGA] Obligación no encontrada:", obligacionId);
+    return null;
+  }
+
+  // 2. Obtener facturas validadas/extraídas de la obligación
+  const { data: facturas, error: factErr } = await supabase
+    .from("facturas")
+    .select("id, servicio, monto, fecha_vencimiento, estado, creado_en")
+    .eq("obligacion_id", obligacionId)
+    .in("estado", ["validada", "extraida"]);
+
+  if (factErr) {
+    console.error("[SOLICITUDES_RECARGA] Error obteniendo facturas:", factErr.message);
+    return null;
+  }
+
+  // 3. Obtener solicitudes pendientes/parciales existentes
+  const { data: solicitudesExistentes, error: solErr } = await supabase
+    .from("solicitudes_recarga")
+    .select("*")
+    .eq("obligacion_id", obligacionId)
+    .in("estado", ["pendiente", "parcial"]);
+
+  if (solErr) {
+    console.error("[SOLICITUDES_RECARGA] Error obteniendo solicitudes:", solErr.message);
+    return null;
+  }
+
+  // Si no hay facturas validadas, marcar solicitudes como canceladas
+  if (!facturas || facturas.length === 0) {
+    if (solicitudesExistentes && solicitudesExistentes.length > 0) {
+      await supabase
+        .from("solicitudes_recarga")
+        .update({ estado: "cancelada", actualizado_en: new Date().toISOString() })
+        .in("id", solicitudesExistentes.map(s => s.id));
+      console.log("[SOLICITUDES_RECARGA] Solicitudes canceladas - sin facturas validadas");
+    }
+    return { canceladas: solicitudesExistentes?.length || 0 };
+  }
+
+  // 4. Recalcular monto total
+  const montoTotal = facturas.reduce((sum, f) => sum + Number(f.monto || 0), 0);
+
+  // 5. Obtener monto ya recargado (suma de monto_recargado de todas las solicitudes)
+  const montoRecargado = (solicitudesExistentes || []).reduce(
+    (sum, s) => sum + Number(s.monto_recargado || 0), 0
+  );
+
+  // 6. Calcular nuevas fechas según el plan
+  const plan = obligacion.usuarios?.plan || "control";
+  const periodo = obligacion.periodo;
+
+  let nuevaFechaLimite, nuevaFechaRecordatorio;
+
+  if (plan === "control") {
+    nuevaFechaLimite = calcularFechaLimiteCuota1(facturas, periodo);
+    nuevaFechaRecordatorio = restarDias(nuevaFechaLimite, DIAS_ANTICIPACION_RECORDATORIO);
+  } else {
+    // Para planes con 2 cuotas, usamos la distribución
+    const distribucion = distribuirFacturasEnCuotas(facturas, periodo);
+    // Usamos la fecha de la primera cuota
+    nuevaFechaLimite = distribucion.cuota1.fechaLimite;
+    nuevaFechaRecordatorio = distribucion.cuota1.fechaRecordatorio;
+  }
+
+  // 7. Actualizar las solicitudes existentes
+  const actualizaciones = [];
+  for (const sol of (solicitudesExistentes || [])) {
+    const updateData = {
+      monto_solicitado: montoTotal,
+      monto_recargado: montoRecargado, // mantiene lo ya recargado
+      facturas_ids: facturas.map(f => f.id),
+      actualizado_en: new Date().toISOString(),
+    };
+
+    // Actualizar fechas según el número de cuota
+    if (sol.numero_cuota === 1) {
+      updateData.fecha_limite = nuevaFechaLimite;
+      updateData.fecha_recordatorio = nuevaFechaRecordatorio;
+    } else if (sol.numero_cuota === 2 && plan !== "control") {
+      const distribucion = distribuirFacturasEnCuotas(facturas, periodo);
+      if (distribucion.cuota2.facturas.length > 0) {
+        updateData.fecha_limite = distribucion.cuota2.fechaLimite;
+        updateData.fecha_recordatorio = distribucion.cuota2.fechaRecordatorio;
+      }
+    }
+
+    // Resetear recordatorio_enviado para que se vuelva a enviar si la fecha cambió
+    if (sol.fecha_recordatorio !== nuevaFechaRecordatorio) {
+      updateData.recordatorio_enviado = false;
+    }
+
+    await supabase
+      .from("solicitudes_recarga")
+      .update(updateData)
+      .eq("id", sol.id);
+
+    actualizaciones.push(sol.id);
+  }
+
+  console.log(`[SOLICITUDES_RECARGA] Actualizadas ${actualizaciones.length} solicitudes para obligación ${obligacionId}`);
+  return {
+    actualizadas: actualizaciones.length,
+    monto_total: montoTotal,
+    monto_recargado: montoRecargado,
+  };
+}
+
+/**
+ * Verifica recordatorios para TODOS los usuarios.
+ * Esta función está diseñada para ser llamada por un job/cron.
+ */
+async function verificarRecordatoriosGlobal() {
+  console.log("[JOBS] Iniciando verificación de recordatorios global...");
+
+  // Obtener todos los usuarios con solicitudes pendientes
+  const { data: solicitudes, error } = await supabase
+    .from("solicitudes_recarga")
+    .select("usuario_id, obligacion_id")
+    .in("estado", ["pendiente", "parcial"])
+    .eq("recordatorio_enviado", false);
+
+  if (error) {
+    console.error("[JOBS] Error consultando solicitudes:", error.message);
+    return;
+  }
+
+  // Obtener usuarios únicos
+  const usuariosUnicos = [...new Set((solicitudes || []).map(s => s.usuario_id))];
+  console.log(`[JOBS] Verificando recordatorios para ${usuariosUnicos.length} usuarios`);
+
+  let notificacionesEnviadas = 0;
+
+  for (const usuarioId of usuariosUnicos) {
+    try {
+      // Obtener teléfono del usuario
+      const { data: usuario } = await supabase
+        .from("usuarios")
+        .select("telefono")
+        .eq("id", usuarioId)
+        .single();
+
+      if (!usuario) continue;
+
+      // Llamar a verificarRecordatorios para este usuario
+      const result = await verificarRecordatorios({ telefono: usuario.telefono });
+      if (result.body?.data?.recordatorios_generados) {
+        notificacionesEnviadas += result.body.data.recordatorios_generados;
+      }
+    } catch (err) {
+      console.error(`[JOBS] Error verificando recordatorios para usuario ${usuarioId}:`, err.message);
+    }
+  }
+
+  console.log(`[JOBS] Verificación de recordatorios completada. Notificaciones enviadas: ${notificacionesEnviadas}`);
+  return { notificaciones_enviadas: notificacionesEnviadas };
 }
 
 module.exports = {
   generarSolicitudes,
   listarSolicitudes,
   verificarRecordatorios,
+  verificarRecordatoriosGlobal,
   actualizarFechasSolicitud,
+  // Exportar funciones auxiliares para uso en otros módulos
+  calcularFechaRecordatorioFactura,
+  recalcularSolicitudesPorObligacion,
 };
