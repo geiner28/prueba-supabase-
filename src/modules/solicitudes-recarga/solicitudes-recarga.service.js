@@ -636,49 +636,76 @@ async function recalcularSolicitudesPorObligacion(obligacionId) {
     (sum, s) => sum + Number(s.monto_recargado || 0), 0
   );
 
-  // 6. Calcular nuevas fechas según el plan
+  // 6. Calcular nuevas fechas y distribución según el plan
+  // IMPORTANTE: Calcular distribución UNA SOLA VEZ antes del loop
   const plan = obligacion.usuarios?.plan || "control";
   const periodo = obligacion.periodo;
 
-  let nuevaFechaLimite, nuevaFechaRecordatorio;
+  let distribucion = null;
+  let nuevaFechaLimiteCuota1, nuevaFechaRecordatorioCuota1;
+  let nuevaFechaLimiteCuota2, nuevaFechaRecordatorioCuota2;
+  let montoCuota1, montoCuota2;
 
   if (plan === "control") {
-    nuevaFechaLimite = calcularFechaLimiteCuota1(facturas, periodo);
-    nuevaFechaRecordatorio = restarDias(nuevaFechaLimite, DIAS_ANTICIPACION_RECORDATORIO);
+    // Plan control: 1 cuota por el total
+    nuevaFechaLimiteCuota1 = calcularFechaLimiteCuota1(facturas, periodo);
+    nuevaFechaRecordatorioCuota1 = restarDias(nuevaFechaLimiteCuota1, DIAS_ANTICIPACION_RECORDATORIO);
+    montoCuota1 = montoTotal;
+    montoCuota2 = 0;
   } else {
-    // Para planes con 2 cuotas, usamos la distribución
-    const distribucion = distribuirFacturasEnCuotas(facturas, periodo);
-    // Usamos la fecha de la primera cuota
-    nuevaFechaLimite = distribucion.cuota1.fechaLimite;
-    nuevaFechaRecordatorio = distribucion.cuota1.fechaRecordatorio;
+    // Planes con 2 cuotas: calcular distribución UNA sola vez
+    distribucion = distribuirFacturasEnCuotas(facturas, periodo);
+    
+    nuevaFechaLimiteCuota1 = distribucion.cuota1.fechaLimite;
+    nuevaFechaRecordatorioCuota1 = distribucion.cuota1.fechaRecordatorio;
+    montoCuota1 = distribucion.cuota1.monto;
+    
+    nuevaFechaLimiteCuota2 = distribucion.cuota2.fechaLimite;
+    nuevaFechaRecordatorioCuota2 = distribucion.cuota2.fechaRecordatorio;
+    montoCuota2 = distribucion.cuota2.monto;
+  }
+
+  console.log(`[SOLICITUDES_RECARGA] Distribución calculada: cuota1=${montoCuota1}, cuota2=${montoCuota2}`);
+  console.log(`[SOLICITUDES_RECARGA] Fechas - Cuota1: limite=${nuevaFechaLimiteCuota1}, recordatorio=${nuevaFechaRecordatorioCuota1}`);
+  if (plan !== "control") {
+    console.log(`[SOLICITUDES_RECARGA] Fechas - Cuota2: limite=${nuevaFechaLimiteCuota2}, recordatorio=${nuevaFechaRecordatorioCuota2}`);
   }
 
   // 7. Actualizar las solicitudes existentes
   const actualizaciones = [];
   for (const sol of (solicitudesExistentes || [])) {
+    console.log(`[SOLICITUDES_RECARGA] Procesando solicitud ${sol.id} - cuota ${sol.numero_cuota}, estado=${sol.estado}`);
+    
     const updateData = {
-      monto_solicitado: montoTotal,
       monto_recargado: montoRecargado, // mantiene lo ya recargado
       facturas_ids: facturas.map(f => f.id),
       actualizado_en: new Date().toISOString(),
     };
 
-    // Actualizar fechas según el número de cuota
+    // Asignar monto_solicitado correcto según el número de cuota
     if (sol.numero_cuota === 1) {
-      updateData.fecha_limite = nuevaFechaLimite;
-      updateData.fecha_recordatorio = nuevaFechaRecordatorio;
+      updateData.monto_solicitado = montoCuota1;
+      updateData.fecha_limite = nuevaFechaLimiteCuota1;
+      updateData.fecha_recordatorio = nuevaFechaRecordatorioCuota1;
     } else if (sol.numero_cuota === 2 && plan !== "control") {
-      const distribucion = distribuirFacturasEnCuotas(facturas, periodo);
+      updateData.monto_solicitado = montoCuota2;
       if (distribucion.cuota2.facturas.length > 0) {
-        updateData.fecha_limite = distribucion.cuota2.fechaLimite;
-        updateData.fecha_recordatorio = distribucion.cuota2.fechaRecordatorio;
+        updateData.fecha_limite = nuevaFechaLimiteCuota2;
+        updateData.fecha_recordatorio = nuevaFechaRecordatorioCuota2;
       }
     }
 
-    // Resetear recordatorio_enviado para que se vuelva a enviar si la fecha cambió
-    if (sol.fecha_recordatorio !== nuevaFechaRecordatorio) {
+    // Resetear recordatorio_enviado solo cuando la fecha correspondiente CAMBIA
+    // Comparar con la fecha correcta según el número de cuota
+    const fechaRecordatorioAnterior = sol.fecha_recordatorio;
+    const nuevaFechaRecordatorio = sol.numero_cuota === 1 ? nuevaFechaRecordatorioCuota1 : nuevaFechaRecordatorioCuota2;
+    
+    if (fechaRecordatorioAnterior !== nuevaFechaRecordatorio) {
+      console.log(`[SOLICITUDES_RECARGA] Solicitud ${sol.id}: fecha_recordatorio cambió de ${fechaRecordatorioAnterior} a ${nuevaFechaRecordatorio} - reseteando recordatorio_enviado`);
       updateData.recordatorio_enviado = false;
     }
+
+    console.log(`[SOLICITUDES_RECARGA] Actualizando solicitud ${sol.id}:`, JSON.stringify(updateData));
 
     await supabase
       .from("solicitudes_recarga")
