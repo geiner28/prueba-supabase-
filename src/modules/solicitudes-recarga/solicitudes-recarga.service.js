@@ -477,9 +477,16 @@ function distribuirFacturasEnCuotas(facturas, periodo) {
         cuota2.monto += Number(f.monto || 0);
       }
     } else {
-      // Sin fecha de vencimiento → asignar a cuota 1 por defecto
-      cuota1.facturas.push(f);
-      cuota1.monto += Number(f.monto || 0);
+      // Sin fecha de vencimiento → usar fecha de recordatorio (creado_en + 15 días) para clasificar
+      const fechaCalculada = calcularFechaRecordatorioFactura(f);
+      const dia = new Date(fechaCalculada + "T00:00:00Z").getUTCDate();
+      if (dia <= 15) {
+        cuota1.facturas.push(f);
+        cuota1.monto += Number(f.monto || 0);
+      } else {
+        cuota2.facturas.push(f);
+        cuota2.monto += Number(f.monto || 0);
+      }
     }
   }
 
