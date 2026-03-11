@@ -182,6 +182,272 @@ async function marcarEnviadasBatch(ids) {
   return success({ actualizadas: (data || []).length });
 }
 
+// ===========================================
+// FUNCIONES DE NOTIFICACIÓN DE RECARGA
+// ===========================================
+
+/**
+ * Obtiene el nombre del mes actual
+ */
+function getNombreMesActual() {
+  const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
+                 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  const now = new Date();
+  return `${meses[now.getMonth()]} ${now.getFullYear()}`;
+}
+
+/**
+ * Obtiene el nombre del mes anterior
+ */
+function getNombreMesAnterior() {
+  const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
+                 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  const now = new Date();
+  const mesAnterior = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return `${meses[mesAnterior.getMonth()]} ${mesAnterior.getFullYear()}`;
+}
+
+/**
+ * Verifica si ya existe una notificación del mismo tipo creada HOY
+ * Usa count para mayor eficiencia
+ */
+async function existeNotificacionHoy(usuarioId, tipo) {
+  const ahora = new Date();
+  const inicioDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0).toISOString();
+  const finDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 23, 59, 59).toISOString();
+  
+  const { count, error } = await supabase
+    .from('notificaciones')
+    .select('*', { count: 'exact', head: true })
+    .eq('usuario_id', usuarioId)
+    .eq('tipo', tipo)
+    .gte('creado_en', inicioDia)
+    .lte('creado_en', finDia);
+  
+  if (error) {
+    console.error("[NOTIFICACIONES] Error verificando notificación:", error.message);
+    return false;
+  }
+  
+  return (count || 0) > 0;
+}
+
+/**
+ * Genera mensaje de INICIO DE MES
+ * Template exacto según especificación
+ */
+function generarMensajeInicioMes(datos) {
+  const {
+    nombre_usuario,
+    mes_anterior,
+    mes_actual,
+    obligaciones,
+    total_obligaciones,
+    saldo_actual,
+    valor_a_recargar
+  } = datos;
+  
+  const fmtMonto = (v) => Number(v).toLocaleString('es-CO');
+  
+  let listaobligaciones = '';
+  for (const obl of obligaciones) {
+    listaobligaciones += `"@${obl.etiqueta}": "$ ${fmtMonto(obl.monto)}".\n`;
+  }
+  
+  const mensaje = `Hola ${nombre_usuario} ✌🏼
+Arrancamos mes!
+
+En ${mes_anterior} pagaste "$ ${fmtMonto(total_obligaciones)}" y tienes un saldo de "$ ${fmtMonto(saldo_actual)}"
+
+Para ${mes_actual}, tus obligaciones suman "$ ${fmtMonto(total_obligaciones)}", así:
+
+${listaobligaciones}
+La recarga total sugerida para ${mes_actual} es de "$ ${fmtMonto(valor_a_recargar)}".
+
+Puedes hacer la recarga a la llave 0090944088.
+
+Apenas la hagas, me envías el comprobante y yo me encargo del resto deOne! 🙌🏼`;
+  
+  return mensaje;
+}
+
+/**
+ * Genera mensaje GENÉRICO
+ * Template exacto según especificación
+ */
+function generarMensajeGenerico(datos) {
+  const {
+    nombre_usuario,
+    obligaciones,
+    total_obligaciones,
+    saldo_actual,
+    valor_a_recargar
+  } = datos;
+  
+  const fmtMonto = (v) => Number(v).toLocaleString('es-CO');
+  
+  let listaobligaciones = '';
+  for (const obl of obligaciones) {
+    listaobligaciones += `"@${obl.etiqueta}": "$ ${fmtMonto(obl.monto)}".\n`;
+  }
+  
+  const mensaje = `Hola ${nombre_usuario}! 👋🏼
+Ya estamos listos para recibir tu recarga, con la que cubriremos:
+${listaobligaciones}
+Total: "$ ${fmtMonto(total_obligaciones)}"
+Aplicamos tu saldo: "$ ${fmtMonto(saldo_actual)}"
+
+Total a recargar: "$ ${fmtMonto(valor_a_recargar)}".
+Puedes hacer la recarga a la llave 0090944088.
+
+Apenas la hagas, me envías el comprobante y yo me encargo del resto deOne! 🙌🏼`;
+  
+  return mensaje;
+}
+
+/**
+ * Genera mensaje de RECARGA CONFIRMADA
+ */
+function generarMensajeConfirmada(datos) {
+  const { nombre, saldo } = datos;
+  
+  const fmtSaldo = (v) => Number(v).toLocaleString('es-CO');
+  
+  const mensaje = `Recibido, ${nombre} ✌🏼
+
+Ya registré tu recarga. Tu saldo disponible en deOne es de $ ${fmtSaldo(saldo)}`;
+  
+  return mensaje;
+}
+
+/**
+ * Prepara datos completos para notificación de recarga
+ */
+async function prepararDatosNotificacion(obligacionId, esPrimeraRecarga) {
+  // Importar funciones del módulo de solicitudes
+  const solicitudesModule = require('../solicitudes-recarga/solicitudes-recarga.service');
+  
+  // Obtener obligación con usuario
+  const obligacion = await solicitudesModule.obtenerObligacionConUsuario(obligacionId);
+  if (!obligacion) return null;
+  
+  // Obtener facturas
+  const facturas = await solicitudesModule.obtenerFacturasValidadas(obligacionId);
+  
+  // Calcular totales
+  const total_obligaciones = facturas.reduce((sum, f) => sum + Number(f.monto || 0), 0);
+  const saldo_actual = await solicitudesModule.calcularSaldoUsuario(obligacion.usuario_id, obligacion.periodo);
+  const valor_a_recargar = Math.max(0, total_obligaciones - saldo_actual);
+  
+  // Obtener nombre del mes actual y anterior
+  const mesActual = getNombreMesActual();
+  const mesAnterior = getNombreMesAnterior();
+  
+  // Obtener datos del usuario para nombre
+  const { data: usuario } = await supabase
+    .from('usuarios')
+    .select('nombre')
+    .eq('id', obligacion.usuario_id)
+    .single();
+  
+  // Obtener total del mes anterior (pagos realizados)
+  const { data: pagosMesAnterior } = await supabase
+    .from('pagos')
+    .select('monto_aplicado')
+    .eq('usuario_id', obligacion.usuario_id)
+    .eq('estado', 'pagado');
+  
+  const totalMesAnterior = (pagosMesAnterior || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
+  
+  // Preparar obligaciones con etiqueta
+  const obligaciones = facturas.map(f => ({
+    etiqueta: f.servicio || 'Servicio',
+    monto: Number(f.monto || 0)
+  }));
+  
+  return {
+    obligacion_id: obligacionId,
+    usuario_id: obligacion.usuario_id,
+    nombre_usuario: usuario?.nombre || 'Usuario',
+    periodo: obligacion.periodo,
+    es_primera_recarga: esPrimeraRecarga,
+    obligaciones: obligaciones,
+    total_obligaciones: total_obligaciones,
+    saldo_actual: saldo_actual,
+    valor_a_recargar: valor_a_recargar,
+    mes_actual: mesActual,
+    mes_anterior: mesAnterior,
+    total_mes_anterior: totalMesAnterior
+  };
+}
+
+/**
+ * Crea una notificación de recarga estructurada
+ */
+async function crearNotificacionRecarga(usuarioId, tipo, datos) {
+  // Obtener datos del usuario
+  const { data: usuario } = await supabase
+    .from('usuarios')
+    .select('nombre')
+    .eq('id', usuarioId)
+    .single();
+  
+  const nombreUsuario = usuario?.nombre || 'Usuario';
+  
+  // Preparar payload estructurado
+  const payload = {
+    tipo_mensaje: tipo === 'solicitud_recarga_inicio_mes' ? 'inicio_mes' : (tipo === 'recarga_confirmada' ? 'confirmada' : 'generico'),
+    nombre_usuario: nombreUsuario,
+    mes_actual: datos.mes_actual || getNombreMesActual(),
+    mes_anterior: datos.mes_anterior || getNombreMesAnterior(),
+    obligaciones: datos.obligaciones || [],
+    total_obligaciones: datos.total_obligaciones || 0,
+    saldo_actual: datos.saldo_actual || 0,
+    valor_a_recargar: datos.valor_a_recargar || 0,
+    es_primera_recarga: datos.es_primera_recarga || false,
+    obligacion_id: datos.obligacion_id,
+    periodo: datos.periodo,
+    mensaje: ''
+  };
+  
+  // Generar mensaje según tipo
+  if (tipo === 'solicitud_recarga_inicio_mes') {
+    payload.mensaje = generarMensajeInicioMes({
+      nombre_usuario: nombreUsuario,
+      mes_anterior: datos.mes_anterior || getNombreMesAnterior(),
+      mes_actual: datos.mes_actual || getNombreMesActual(),
+      obligaciones: datos.obligaciones || [],
+      total_obligaciones: datos.total_obligaciones || 0,
+      saldo_actual: datos.saldo_actual || 0,
+      valor_a_recargar: datos.valor_a_recargar || 0
+    });
+  } else if (tipo === 'solicitud_recarga') {
+    payload.mensaje = generarMensajeGenerico({
+      nombre_usuario: nombreUsuario,
+      obligaciones: datos.obligaciones || [],
+      total_obligaciones: datos.total_obligaciones || 0,
+      saldo_actual: datos.saldo_actual || 0,
+      valor_a_recargar: datos.valor_a_recargar || 0
+    });
+  } else if (tipo === 'recarga_confirmada') {
+    payload.mensaje = generarMensajeConfirmada({
+      nombre: nombreUsuario,
+      monto: datos.monto,
+      saldo: datos.saldo
+    });
+  }
+  
+  // Crear notificación
+  const notificacion = await crearNotificacionInterna({
+    usuario_id: usuarioId,
+    tipo: tipo,
+    canal: 'whatsapp',
+    payload: payload
+  });
+  
+  return notificacion;
+}
+
 module.exports = {
   crearNotificacion,
   crearNotificacionInterna,
@@ -190,4 +456,11 @@ module.exports = {
   obtenerPendientesUsuario,
   actualizarEstadoNotificacion,
   marcarEnviadasBatch,
+  // Nuevas funciones para el flujo de recargas
+  crearNotificacionRecarga,
+  generarMensajeInicioMes,
+  generarMensajeGenerico,
+  generarMensajeConfirmada,
+  prepararDatosNotificacion,
+  existeNotificacionHoy,
 };

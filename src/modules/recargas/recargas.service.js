@@ -9,6 +9,17 @@ const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
 const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
 
+// Importar funciones de notificaciones de recarga
+let crearNotificacionRecarga;
+let prepararDatosNotificacion;
+try {
+  crearNotificacionRecarga = require("../notificaciones/notificaciones.service").crearNotificacionRecarga;
+  prepararDatosNotificacion = require("../notificaciones/notificaciones.service").prepararDatosNotificacion;
+} catch (e) {
+  crearNotificacionRecarga = null;
+  prepararDatosNotificacion = null;
+}
+
 /**
  * Reportar recarga (desde el bot).
  */
@@ -144,6 +155,48 @@ async function aprobarRecarga(recargaId, body, adminId) {
       mensaje: `Tu recarga de $${Number(recarga.monto).toLocaleString()} ha sido aprobada.`,
     },
   });
+
+  // NUEVO: Enviar notificación de recarga confirmada con el nuevo saldo
+  if (crearNotificacionRecarga && prepararDatosNotificacion) {
+    try {
+      // Calcular el nuevo saldo del usuario
+      const { data: todasRecargas } = await supabase
+        .from('recargas')
+        .select('monto')
+        .eq('usuario_id', recarga.usuario_id)
+        .eq('estado', 'aprobada');
+      
+      const { data: todosPagos } = await supabase
+        .from('pagos')
+        .select('monto_aplicado')
+        .eq('usuario_id', recarga.usuario_id)
+        .eq('estado', 'pagado');
+      
+      const totalRecargas = (todasRecargas || []).reduce((sum, r) => sum + Number(r.monto || 0), 0);
+      const totalPagos = (todosPagos || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
+      const saldoActual = totalRecargas - totalPagos;
+      
+      // Preparar datos para notificación de recarga confirmada
+      const datosConfirmada = {
+        nombre_usuario: '', // se填充 en crearNotificacionRecarga
+        monto: recarga.monto,
+        saldo: saldoActual,
+        periodo: recarga.periodo
+      };
+      
+      // Crear notificación de recarga confirmada
+      await crearNotificacionRecarga(
+        recarga.usuario_id,
+        'recarga_confirmada',
+        datosConfirmada
+      );
+      
+      console.log(`[RECARGAS] Notificación de recarga confirmada enviada para usuario ${recarga.usuario_id}, saldo: ${saldoActual}`);
+    } catch (err) {
+      console.error("[RECARGAS] Error enviando notificación de recarga confirmada:", err.message);
+      // No fallamos la operación si falla la notificación
+    }
+  }
 
   return success(updated);
 }
