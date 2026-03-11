@@ -13,10 +13,141 @@ try {
   cron = null;
 }
 
+// Variable global para prevenir ejecución concurrente del job
+let isJobRunning = false;
+
+const supabase = require("../config/supabase");
+
+// Importar funciones del módulo de solicitudes
 const { 
-  verificarRecordatoriosGlobal, 
-  recalcularSolicitudesPorObligacion 
+  evaluarObligacion,
+  obtenerObligacionesActivas,
+  detectarPrimeraRecargaDelMes,
+  obtenerFacturasValidadas,
+  calcularSaldoUsuario
 } = require("../modules/solicitudes-recarga/solicitudes-recarga.service");
+
+// Importar funciones de notificaciones
+const {
+  crearNotificacionRecarga,
+  prepararDatosNotificacion,
+  existeNotificacionHoy
+} = require("../modules/notificaciones/notificaciones.service");
+
+/**
+ * JOB PRINCIPAL: jobEvaluacionRecargas
+ * Se ejecuta todos los días a las 9:00 AM
+ * Orchestras la evaluación de todas las obligaciones
+ */
+async function jobEvaluacionRecargas() {
+  // Verificar si ya hay una ejecución en curso
+  if (isJobRunning) {
+    console.log("[JOBS] ⚠️ Job ya está en ejecución. Omitiendo esta ejecución.");
+    return { skipped: true, motivo: "ejecucion_concurrente" };
+  }
+  
+  // Marcar como en ejecución
+  isJobRunning = true;
+  
+  console.log("[JOBS] ════════════════════════════════════════");
+  console.log("[JOBS] INICIANDO EVALUACIÓN DE RECARGAS - 9:00 AM");
+  console.log("[JOBS] ════════════════════════════════════════");
+  
+  const hoy = new Date().toISOString().split('T')[0];
+  console.log(`[JOBS] Fecha de ejecución: ${hoy}`);
+  
+  try {
+    // Paso 1: Obtener obligaciones activas
+    console.log("[JOBS] Obteniendo obligaciones activas...");
+    const obligaciones = await obtenerObligacionesActivas();
+    console.log(`[JOBS] ${obligaciones.length} obligaciones activas encontradas`);
+    
+    let procesadas = 0;
+    let notificacionesCreadas = 0;
+    let errores = 0;
+    
+    // Paso 2: Evaluar cada obligación
+    for (const obligacion of obligaciones) {
+      try {
+        console.log(`[JOBS] Procesando obligación: ${obligacion.id}`);
+        
+        // 2.1: Evaluar y crear/actualizar solicitud de recarga
+        const resultado = await evaluarObligacion(obligacion.id);
+        
+        // 2.2: Si hay resultado con solicitud cargada, crear notificación
+        if (resultado && resultado.solicitudCargada) {
+          
+          // 2.3: Detectar si es primera recarga del mes
+          const esPrimeraRecarga = await detectarPrimeraRecargaDelMes(resultado.usuarioId);
+          
+          // 2.4: Determinar tipo de notificación
+          const tipoNotificacion = esPrimeraRecarga 
+            ? 'solicitud_recarga_inicio_mes' 
+            : 'solicitud_recarga';
+          
+          console.log(`[JOBS] Es primera recarga del mes: ${esPrimeraRecarga}, tipo: ${tipoNotificacion}`);
+          
+          // 2.5: Verificar si ya se envió notificación hoy (prevenir duplicados)
+          const yaEnviadaHoy = await existeNotificacionHoy(
+            resultado.usuarioId, 
+            tipoNotificacion
+          );
+          
+          if (!yaEnviadaHoy) {
+            // 2.6: Preparar datos y crear notificación estructurada
+            const datos = await prepararDatosNotificacion(
+              resultado.obligacionId, 
+              esPrimeraRecarga
+            );
+            
+            if (datos) {
+              await crearNotificacionRecarga(
+                resultado.usuarioId,
+                tipoNotificacion,
+                datos
+              );
+              notificacionesCreadas++;
+              console.log(`[JOBS] Notificación creada: ${tipoNotificacion}`);
+            }
+          } else {
+            console.log(`[JOBS] Notificación ya enviada hoy para usuario ${resultado.usuarioId}, omitiendo`);
+          }
+        } else if (resultado && resultado.skipped) {
+          console.log(`[JOBS] Obligación ${obligacion.id}: saltada (fecha recordatorio no llegada)`);
+        } else if (resultado && resultado.cumple) {
+          console.log(`[JOBS] Obligación ${obligacion.id}: cumple (saldo suficiente)`);
+        }
+        
+        procesadas++;
+        
+      } catch (err) {
+        console.error(`[JOBS] Error procesando obligación ${obligacion.id}:`, err.message);
+        errores++;
+      }
+    }
+    
+    console.log(`[JOBS] ════════════════════════════════════════`);
+    console.log(`[JOBS] RESUMEN:`);
+    console.log(`[JOBS] - Obligaciones procesadas: ${procesadas}`);
+    console.log(`[JOBS] - Notificaciones creadas: ${notificacionesCreadas}`);
+    console.log(`[JOBS] - Errores: ${errores}`);
+    console.log(`[JOBS] ════════════════════════════════════════`);
+    
+    return {
+      obligacionesProcesadas: procesadas,
+      notificacionesCreadas: notificacionesCreadas,
+      errores: errores
+    };
+    
+  } catch (error) {
+    console.error("[JOBS] Error en jobEvaluacionRecargas:", error.message);
+    throw error;
+  } finally {
+    // Liberar el lock al terminar (éxito o error)
+    isJobRunning = false;
+    console.log("[JOBS] Lock de job liberado");
+  }
+}
 
 /**
  * Job principal: Recalcula solicitudes y luego verifica recordatorios.
@@ -79,6 +210,8 @@ async function recalcularTodasSolicitudes() {
 
   for (const obligacionId of obligacionesUnicas) {
     try {
+      // Importar la función de recalcular
+      const { recalcularSolicitudesPorObligacion } = require("../modules/solicitudes-recarga/solicitudes-recarga.service");
       const resultado = await recalcularSolicitudesPorObligacion(obligacionId);
       if (resultado) {
         procesadas++;
@@ -92,8 +225,8 @@ async function recalcularTodasSolicitudes() {
   return { obligacionesProcesadas: procesadas, errores };
 }
 
-// Importar supabase para la función interna
-const supabase = require("../config/supabase");
+// Importar función de verificación global (recalcular)
+const { verificarRecordatoriosGlobal } = require("../modules/solicitudes-recarga/solicitudes-recarga.service");
 
 /**
  * Inicializa los jobs programados.
@@ -107,40 +240,53 @@ function initJobs() {
 
   console.log("[JOBS] Inicializando jobs programados...");
 
-  // Job: Verificar recordatorios diariamente a las 9:00 AM
-  // Formato cron: minuto hora día mes día_semana
-  // "0 9 * * *" = a las 9:00 AM todos los días
-  const jobRecordatorios = cron.schedule("0 9 * * *", async () => {
+  // JOB 1: Evaluación de recargas (9:00 AM) - NUEVO
+  const jobRecargas = cron.schedule("0 9 * * *", async () => {
     console.log("[JOBS] ════════════════════════════════════════");
-    console.log("[JOBS] EJECUTANDO JOB PROGRAMADO - 9:00 AM");
+    console.log("[JOBS] EJECUTANDO JOB DE RECARGAS - 9:00 AM");
     console.log("[JOBS] ════════════════════════════════════════");
     try {
-      const result = await jobRecordatoriosCompleto();
+      const result = await jobEvaluacionRecargas();
       console.log("[JOBS] Resultado del job:", JSON.stringify(result, null, 2));
     } catch (error) {
-      console.error("[JOBS] Error en job programado:", error.message);
+      console.error("[JOBS] Error en job de recargas:", error.message);
     }
   });
 
-  console.log("[JOBS] ✓ Job de recordatorios programado para ejecutarse diariamente a las 9:00 AM");
-  console.log("[JOBS] ✓ El job recalculará solicitudes antes de verificar recordatorios");
+  // JOB 2: Recordatorios (opcional, mantener existente)
+  // Este job ya no es necesario ya que jobEvaluacionRecargas hace todo
+  // Se mantiene por compatibilidad si hay lógica adicional
+
+  console.log("[JOBS] ✓ Job de evaluación de recargas programado para 9:00 AM");
+  console.log("[JOBS] ✓ El job evaluará obligaciones, calculará montos y creará notificaciones");
   console.log("[JOBS] Jobs inicializados correctamente");
 
   return {
-    jobRecordatorios,
+    jobRecargas,
+    jobRecordatorios: jobRecargas, // Alias para compatibilidad
     stopAll: () => {
-      jobRecordatorios.stop();
+      jobRecargas.stop();
       console.log("[JOBS] Todos los jobs detenido");
     },
   };
 }
 
 /**
- * Ejecuta manualmente el job completo (para pruebas).
+ * Ejecuta manualmente el job de evaluación de recargas (para pruebas).
  */
 async function runJobManually() {
   console.log("[JOBS] ════════════════════════════════════════");
-  console.log("[JOBS] EJECUTANDO JOB MANUAL");
+  console.log("[JOBS] EJECUTANDO JOB MANUAL DE RECARGAS");
+  console.log("[JOBS] ════════════════════════════════════════");
+  return await jobEvaluacionRecargas();
+}
+
+/**
+ * Ejecuta manualmente el job completo (para pruebas).
+ */
+async function runJobCompletoManually() {
+  console.log("[JOBS] ════════════════════════════════════════");
+  console.log("[JOBS] EJECUTANDO JOB COMPLETO MANUAL");
   console.log("[JOBS] ════════════════════════════════════════");
   return await jobRecordatoriosCompleto();
 }
@@ -148,6 +294,8 @@ async function runJobManually() {
 module.exports = {
   initJobs,
   runJobManually,
+  runJobCompletoManually,
   jobRecordatoriosCompleto,
+  jobEvaluacionRecargas,
 };
 

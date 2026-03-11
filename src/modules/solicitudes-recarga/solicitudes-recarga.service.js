@@ -780,6 +780,355 @@ async function verificarRecordatoriosGlobal() {
   return { notificaciones_enviadas: notificacionesEnviadas };
 }
 
+// ===========================================
+// NUEVAS FUNCIONES PARA EL FLUJO DE RECARGAS
+// ===========================================
+
+/**
+ * Obtiene una obligación con los datos del usuario
+ */
+async function obtenerObligacionConUsuario(obligacionId) {
+  const { data, error } = await supabase
+    .from('obligaciones')
+    .select('*, usuarios!inner(id, nombre, telefono, plan)')
+    .eq('id', obligacionId)
+    .single();
+  
+  if (error || !data) return null;
+  return data;
+}
+
+/**
+ * Obtiene facturas validadas/extraídas de una obligación
+ */
+async function obtenerFacturasValidadas(obligacionId) {
+  const { data, error } = await supabase
+    .from('facturas')
+    .select('id, servicio, monto, fecha_vencimiento, creado_en, periodo')
+    .eq('obligacion_id', obligacionId)
+    .in('estado', ['validada', 'extraida']);
+  
+  if (error) throw new Error(`Error obteniendo facturas: ${error.message}`);
+  return data || [];
+}
+
+/**
+ * Calcula el saldo disponible del usuario para un periodo
+ * saldo = recargas aprobadas - pagos realizados
+ */
+async function calcularSaldoUsuario(usuarioId, periodo) {
+  // Si no hay periodo, retornar 0
+  if (!periodo) {
+    console.log('[SOLICITUDES] Warning: periodo es null, retornando saldo 0');
+    return 0;
+  }
+  
+  // Obtener recargas aprobadas del periodo
+  const { data: recargas, error: recErr } = await supabase
+    .from('recargas')
+    .select('monto')
+    .eq('usuario_id', usuarioId)
+    .eq('estado', 'aprobada')
+    .eq('periodo', periodo);
+  
+  if (recErr) throw new Error(`Error obteniendo recargas: ${recErr.message}`);
+  
+  const totalRecargas = (recargas || []).reduce((sum, r) => sum + Number(r.monto || 0), 0);
+  
+  // Obtener pagos realizados del periodo (obteniendo el periodo de la factura relacionada)
+  const { data: pagos, error: pagErr } = await supabase
+    .from('pagos')
+    .select('monto_aplicado, facturas(periodo)')
+    .eq('usuario_id', usuarioId)
+    .eq('estado', 'pagado');
+  
+  if (pagErr) throw new Error(`Error obteniendo pagos: ${pagErr.message}`);
+  
+  // Filtrar pagos por periodo usando la relación con facturas
+  const totalPagos = (pagos || []).reduce((sum, p) => {
+    const periodoFactura = p.facturas?.periodo;
+    if (periodoFactura === periodo) {
+      return sum + Number(p.monto_aplicado || 0);
+    }
+    return sum;
+  }, 0);
+  
+  return totalRecargas - totalPagos;
+}
+
+/**
+ * Calcula la fecha de recordatorio para una factura (VERSIÓN CORREGIDA)
+ * 
+ * Si tiene fecha_vencimiento:
+ *   fecha_recordatorio = fecha_vencimiento - 5 días (fecha absoluta)
+ * 
+ * Si NO tiene vencimiento (incluye heredadas):
+ *   1. Obtener día de creado_en
+ *   2. dia_recordatorio = dia_creado + 15
+ *   3. Si pasa del mes, ajustar al siguiente mes
+ *   4. Construir fecha usando dia_recordatorio en el MES ACTUAL
+ * 
+ * Ejemplo: creado_en = 28-feb → dia_recordatorio = 13 (28+15=43→43-30=13) → fecha = 13-mar
+ */
+function calcularFechaRecordatorioFacturaV2(factura) {
+  const hoy = new Date();
+  const anioActual = hoy.getFullYear();
+  const mesActual = hoy.getMonth(); // 0-11
+  
+  // Si tiene fecha de vencimiento -> usar vencimiento - 5 días
+  if (factura.fecha_vencimiento) {
+    const venc = new Date(factura.fecha_vencimiento);
+    venc.setDate(venc.getDate() - 5);
+    return venc.toISOString().split('T')[0];
+  }
+  
+  // Si NO tiene vencimiento -> usar día de creado_en + 15 en mes actual
+  const creado = new Date(factura.creado_en);
+  let diaCreacion = creado.getDate();
+  let diaRecordatorio = diaCreacion + 15;
+  
+  // Obtener días del mes actual
+  const diasEnMes = new Date(anioActual, mesActual + 1, 0).getDate();
+  
+  // Ajustar si pasa del mes
+  let mesAplicar = mesActual;
+  let anioAplicar = anioActual;
+  
+  if (diaRecordatorio > diasEnMes) {
+    diaRecordatorio = diaRecordatorio - diasEnMes;
+    // Rotar al siguiente mes
+    mesAplicar = mesAplicar + 1;
+    if (mesAplicar > 11) {
+      mesAplicar = 0;
+      anioAplicar = anioAplicar + 1;
+    }
+    
+    // Verificar si sigue siendo mayor (febrero con 28+15=43 -> 13, pero si es 31+15=46 -> 15)
+    const diasSigMes = new Date(anioAplicar, mesAplicar + 1, 0).getDate();
+    if (diaRecordatorio > diasSigMes) {
+      diaRecordatorio = diaRecordatorio - diasSigMes;
+      mesAplicar = mesAplicar + 1;
+      if (mesAplicar > 11) {
+        mesAplicar = 0;
+        anioAplicar = anioAplicar + 1;
+      }
+    }
+  }
+  
+  // Construir fecha
+  const fechaRecordatorio = new Date(anioAplicar, mesAplicar, diaRecordatorio);
+  return fechaRecordatorio.toISOString().split('T')[0];
+}
+
+/**
+ * Obtiene obligaciones activas para procesar
+ */
+async function obtenerObligacionesActivas() {
+  const { data, error } = await supabase
+    .from('obligaciones')
+    .select('*')
+    .eq('estado', 'activa');
+  
+  if (error) throw new Error(`Error obteniendo obligaciones: ${error.message}`);
+  return data || [];
+}
+
+/**
+ * Crea o actualiza una solicitud de recarga
+ * Usa maybeSingle() para evitar error si no existe
+ */
+async function crearOActualizarSolicitud(obligacion, montoPendiente) {
+  // Buscar solicitud existente
+  const { data: existente, error: findErr } = await supabase
+    .from('solicitudes_recarga')
+    .select('*')
+    .eq('obligacion_id', obligacion.id)
+    .in('estado', ['pendiente', 'parcial'])
+    .maybeSingle();
+  
+  if (findErr) {
+    console.error("[SOLICITUDES] Error buscando solicitud:", findErr.message);
+  }
+  
+  if (existente) {
+    // Actualizar si el monto cambió
+    if (Number(existente.monto_solicitado) !== montoPendiente) {
+      await supabase
+        .from('solicitudes_recarga')
+        .update({
+          monto_solicitado: montoPendiente,
+          actualizado_en: new Date().toISOString()
+        })
+        .eq('id', existente.id);
+      console.log(`[SOLICITUDES] Solicitud ${existente.id} actualizada a $${montoPendiente}`);
+    }
+    return existente;
+  }
+  
+  // Calcular fecha_limite y fecha_recordatorio
+  // Usar el periodo de la obligación o el mes actual
+  const periodo = obligacion.periodo || new Date().toISOString().slice(0, 7) + '-01';
+  
+  // Calcular fecha de recordatorio: día 15 del mes actual
+  const hoy = new Date();
+  const anio = hoy.getFullYear();
+  const mes = hoy.getMonth();
+  const fechaLimite = new Date(anio, mes, 15).toISOString().split('T')[0]; // Día 15
+  const fechaRecordatorio = new Date(anio, mes, 10).toISOString().split('T')[0]; // Día 10
+  
+  // Crear nueva solicitud
+  const { data: nueva, error } = await supabase
+    .from('solicitudes_recarga')
+    .insert({
+      usuario_id: obligacion.usuario_id,
+      obligacion_id: obligacion.id,
+      monto_solicitado: montoPendiente,
+      monto_recargado: 0,
+      estado: 'pendiente',
+      numero_cuota: 1,
+      total_cuotas: 1,
+      plan: obligacion.usuarios?.plan || 'control',
+      fecha_limite: fechaLimite,
+      fecha_recordatorio: fechaRecordatorio,
+    })
+    .select()
+    .single();
+  
+  if (error) throw new Error(`Error creando solicitud: ${error.message}`);
+  console.log(`[SOLICITUDES] Nueva solicitud creada ${nueva.id} por $${montoPendiente}, fecha_limite: ${fechaLimite}`);
+  return nueva;
+}
+
+/**
+ * Marca una solicitud como cumplida
+ */
+async function marcarSolicitudCUMPLIDA(obligacionId) {
+  const { data, error } = await supabase
+    .from('solicitudes_recarga')
+    .update({
+      estado: 'cumplida',
+      actualizado_en: new Date().toISOString()
+    })
+    .eq('obligacion_id', obligacionId)
+    .in('estado', ['pendiente', 'parcial'])
+    .select();
+  
+  if (error) {
+    console.error("[SOLICITUDES] Error marcando cumplida:", error.message);
+    return null;
+  }
+  console.log(`[SOLICITUDES] Solicitud(es) marcadas como cumplidas para obligación ${obligacionId}`);
+  return data;
+}
+
+/**
+ * Detecta si es la primera recarga del mes
+ * Cuenta recargas aprobadas en el mes actual
+ */
+async function detectarPrimeraRecargaDelMes(usuarioId) {
+  const ahora = new Date();
+  const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).toISOString();
+  const finMes = new Date(ahora.getFullYear(), ahora.getMonth() + 1, 0, 23, 59, 59).toISOString();
+  
+  // Prioridad: usar validada_en si existe, sino creado_en
+  const { count, error } = await supabase
+    .from('recargas')
+    .select('id', { count: 'exact', head: true })
+    .eq('usuario_id', usuarioId)
+    .eq('estado', 'aprobada')
+    .gte('validada_en', inicioMes)
+    .lte('validada_en', finMes);
+  
+  // Si no tiene validada_en o no encontró, usar creado_en
+  if ((count === 0 || error) && !error) {
+    const { count: count2 } = await supabase
+      .from('recargas')
+      .select('id', { count: 'exact', head: true })
+      .eq('usuario_id', usuarioId)
+      .eq('estado', 'aprobada')
+      .gte('creado_en', inicioMes)
+      .lte('creado_en', finMes);
+    
+    return (count2 || 0) === 0;
+  }
+  
+  return (count || 0) === 0;
+}
+
+/**
+ * Evalúa una obligación y crea/actualiza solicitud de recarga
+ * Retorna información sobre el resultado
+ */
+async function evaluarObligacion(obligacionId) {
+  // 1. Obtener obligación con usuario
+  const obligacion = await obtenerObligacionConUsuario(obligacionId);
+  if (!obligacion) return null;
+  
+  // 2. Obtener facturas validadas
+  const facturas = await obtenerFacturasValidadas(obligacionId);
+  
+  // Si no hay facturas, omitir
+  if (!facturas.length) {
+    console.log(`[JOBS] Obligación ${obligacionId}: sin facturas validadas, omitiendo`);
+    return null;
+  }
+  
+  // 3. Calcular fecha de recordatorio por factura
+  const fechasRecordatorio = facturas.map(f => calcularFechaRecordatorioFacturaV2(f));
+  const fechaRecordatorioObligacion = fechasRecordatorio.reduce((min, f) => f < min ? f : min, fechasRecordatorio[0]);
+  
+  // 4. Obtener fecha de hoy
+  const hoy = new Date().toISOString().split('T')[0];
+  
+  // 5. Si hoy < fechaRecordatorio -> solo actualizar solicitud y SKIP
+  if (hoy < fechaRecordatorioObligacion) {
+    const totalObligaciones = facturas.reduce((sum, f) => sum + Number(f.monto || 0), 0);
+    const saldoUsuario = await calcularSaldoUsuario(obligacion.usuario_id, obligacion.periodo);
+    const montoPendiente = Math.max(0, totalObligaciones - saldoUsuario);
+    
+    if (montoPendiente > 0) {
+      await crearOActualizarSolicitud(obligacion, montoPendiente);
+    }
+    console.log(`[JOBS] Obligación ${obligacionId}: fecha recordatorio ${fechaRecordatorioObligacion} > ${hoy}, sin notificación`);
+    return { 
+      skipped: true, 
+      motivo: 'fecha_recordatorio_no_llegada',
+      fechaRecordatorio: fechaRecordatorioObligacion,
+      montoPendiente
+    };
+  }
+  
+  // 6. Calcular montos
+  const totalObligaciones = facturas.reduce((sum, f) => sum + Number(f.monto || 0), 0);
+  const saldoUsuario = await calcularSaldoUsuario(obligacion.usuario_id, obligacion.periodo);
+  const montoPendiente = Math.max(0, totalObligaciones - saldoUsuario);
+  
+  // 7. Si montoPendiente <= 0 -> marcar cumplida
+  if (montoPendiente <= 0) {
+    await marcarSolicitudCUMPLIDA(obligacionId);
+    console.log(`[JOBS] Obligación ${obligacionId}: saldo suficiente, marcada como cumplida`);
+    return { 
+      cumple: true, 
+      montoPendiente: 0,
+      saldoUsuario,
+      totalObligaciones
+    };
+  }
+  
+  // 8. Crear o actualizar solicitud
+  const solicitud = await crearOActualizarSolicitud(obligacion, montoPendiente);
+  
+  return {
+    solicitudCargada: true,
+    montoPendiente,
+    totalObligaciones,
+    saldoUsuario,
+    fechaRecordatorio: fechaRecordatorioObligacion,
+    obligacionId,
+    usuarioId: obligacion.usuario_id
+  };
+}
+
 module.exports = {
   generarSolicitudes,
   listarSolicitudes,
@@ -789,4 +1138,14 @@ module.exports = {
   // Exportar funciones auxiliares para uso en otros módulos
   calcularFechaRecordatorioFactura,
   recalcularSolicitudesPorObligacion,
+  // Nuevas funciones para el nuevo flujo de recargas
+  obtenerObligacionConUsuario,
+  obtenerFacturasValidadas,
+  calcularSaldoUsuario,
+  calcularFechaRecordatorioFacturaV2,
+  crearOActualizarSolicitud,
+  marcarSolicitudCUMPLIDA,
+  detectarPrimeraRecargaDelMes,
+  obtenerObligacionesActivas,
+  evaluarObligacion,
 };
