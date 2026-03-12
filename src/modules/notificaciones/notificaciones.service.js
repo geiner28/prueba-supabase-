@@ -123,21 +123,45 @@ async function listarNotificaciones({ telefono, tipo, estado, limit, offset }) {
 
 /**
  * Obtener notificaciones pendientes de un usuario (para el bot).
+ * CHATBOT PASIVO: Al consultar, cambia automáticamente el estado a 'enviada'
+ * para evitar duplicados si el chatbot se reinicia.
  */
 async function obtenerPendientesUsuario(telefono) {
   const usuario = await resolverUsuarioPorTelefono(telefono);
   if (!usuario) return errors.notFound("Usuario no encontrado con ese teléfono");
 
-  const { data, error } = await supabase
+  // 1. Obtener notificaciones pendientes (excluyendo alertas admin)
+  const { data: pendientes, error: queryError } = await supabase
     .from("notificaciones")
     .select("*")
     .eq("usuario_id", usuario.usuario_id)
     .eq("estado", "pendiente")
+    .not("tipo", "eq", "alerta_admin") // Excluir alertas de admin
     .order("creado_en", { ascending: true });
 
-  if (error) throw new Error(`Error buscando notificaciones pendientes: ${error.message}`);
+  if (queryError) throw new Error(`Error buscando notificaciones pendientes: ${queryError.message}`);
 
-  return success(data);
+  // 2. Si hay notificaciones pendientes, cambiar estado a 'enviada' automáticamente
+  if (pendientes && pendientes.length > 0) {
+    const idsActualizar = pendientes.map(n => n.id);
+    
+    const { error: updateError } = await supabase
+      .from("notificaciones")
+      .update({ 
+        estado: "enviada",
+        ultimo_error: null // Limpiar errores previos
+      })
+      .in("id", idsActualizar);
+
+    if (updateError) {
+      console.error("[NOTIFICACIONES] Error cambiando estado a enviada:", updateError.message);
+      // No fallamos, retornamos las notificaciones de todos modos
+    } else {
+      console.log(`[NOTIFICACIONES] ${idsActualizar.length} notificaciones marcadas como enviadas para usuario ${telefono}`);
+    }
+  }
+
+  return success(pendientes || []);
 }
 
 /**
@@ -448,6 +472,173 @@ async function crearNotificacionRecarga(usuarioId, tipo, datos) {
   return notificacion;
 }
 
+// ============================================================
+// FUNCIONES DE ALERTAS AL ADMINISTRADOR
+// ============================================================
+
+/**
+ * Crea una alerta para el administrador.
+ * Se usa cuando un usuario no responde a una solicitud de cobro.
+ * La notificación se crea con usuario_id: null para que el chatbot no la vea.
+ */
+async function crearAlertaAdmin(datos) {
+  const {
+    tipo_alerta,
+    mensaje,
+    usuario_id,
+    usuario_nombre,
+    usuario_telefono,
+    notificacion_cobro_id,
+    periodo,
+    dias_sin_respuesta
+  } = datos;
+
+  // Crear notificación con usuario_id: null (el chatbot no la verá)
+  const { data, error } = await supabase
+    .from("notificaciones")
+    .insert({
+      usuario_id: null, // ⚠️ Clave: NO asociar a ningún usuario
+      tipo: "alerta_admin",
+      canal: "sistema",
+      payload: {
+        tipo_alerta: tipo_alerta || "usuario_sin_respuesta",
+        mensaje: mensaje,
+        usuario_id: usuario_id,
+        usuario_nombre: usuario_nombre,
+        usuario_telefono: usuario_telefono,
+        notificacion_cobro_id: notificacion_cobro_id,
+        periodo: periodo,
+        dias_sin_respuesta: dias_sin_respuesta,
+        fecha_deteccion: new Date().toISOString()
+      },
+      estado: "pendiente"
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[NOTIFICACIONES] Error creando alerta admin:", error.message);
+    return null;
+  }
+
+  console.log(`[NOTIFICACIONES] Alerta admin creada: ${tipo_alerta} para usuario ${usuario_telefono}`);
+  return data;
+}
+
+/**
+ * Job: Verificar usuarios sin respuesta
+ * Se ejecuta cada 6 horas para detectar usuarios que recibieron
+ * notificaciones de cobro pero no han respondido en 24 horas.
+ */
+async function jobVerificarInactividad() {
+  console.log("[JOBS] ════════════════════════════════════════");
+  console.log("[JOBS] INICIANDO VERIFICACIÓN DE INACTIVIDAD");
+  console.log("[JOBS] ════════════════════════════════════════");
+
+  // Calcular rango de tiempo: entre 24h y 48h atrás
+  const ahora = new Date();
+  const hace24h = new Date(ahora.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const hace48h = new Date(ahora.getTime() - 48 * 60 * 60 * 1000).toISOString();
+
+  try {
+    // 1. Buscar notificaciones de cobro enviadas hace 24-48 horas
+    const { data: notificaciones, error } = await supabase
+      .from('notificaciones')
+      .select('id, usuario_id, tipo, estado, creado_en, payload')
+      .in('tipo', ['solicitud_recarga', 'solicitud_recarga_inicio_mes'])
+      .eq('estado', 'enviada')
+      .gte('creado_en', hace48h)
+      .lte('creado_en', hace24h);
+
+    if (error) throw new Error(`Error consultando notificaciones: ${error.message}`);
+
+    console.log(`[JOBS] ${notificaciones?.length || 0} notificaciones de cobro enviadas hace 24-48h`);
+
+    let alertasCreadas = 0;
+
+    // 2. Para cada notificación, verificar si hay recarga después
+    for (const notif of (notificaciones || [])) {
+      // Verificar si ya se creó una alerta para esta notificación
+      const { data: alertaExistente } = await supabase
+        .from('notificaciones')
+        .select('id')
+        .eq('tipo', 'alerta_admin')
+        .eq('estado', 'pendiente')
+        .contains('payload', { notificacion_cobro_id: notif.id })
+        .limit(1)
+        .single();
+
+      if (alertaExistente) {
+        console.log(`[JOBS] Ya existe alerta para notificación ${notif.id}, omitiendo`);
+        continue;
+      }
+
+      // Buscar recargas después de la notificación
+      const { data: recargas } = await supabase
+        .from('recargas')
+        .select('id, estado')
+        .eq('usuario_id', notif.usuario_id)
+        .gt('creado_en', notif.creado_en)
+        .in('estado', ['en_validacion', 'aprobada'])
+        .limit(1);
+
+      // Si NO hay recarga → crear alerta
+      if (!recargas || recargas.length === 0) {
+        // Obtener datos del usuario
+        const { data: usuario } = await supabase
+          .from('usuarios')
+          .select('nombre, telefono')
+          .eq('id', notif.usuario_id)
+          .single();
+
+        await crearAlertaAdmin({
+          tipo_alerta: 'usuario_sin_respuesta',
+          mensaje: `El usuario ${usuario?.nombre || 'Desconocido'} (${usuario?.telefono || 'N/A'}) no ha respondido a la solicitud de recarga hace más de 24 horas.`,
+          usuario_id: notif.usuario_id,
+          usuario_nombre: usuario?.nombre,
+          usuario_telefono: usuario?.telefono,
+          notificacion_cobro_id: notif.id,
+          periodo: notif.payload?.periodo,
+          dias_sin_respuesta: 1
+        });
+
+        alertasCreadas++;
+      }
+    }
+
+    console.log(`[JOBS] ════════════════════════════════════════`);
+    console.log(`[JOBS] RESUMEN VERIFICACIÓN INACTIVIDAD:`);
+    console.log(`[JOBS] - Notificaciones procesadas: ${notificaciones?.length || 0}`);
+    console.log(`[JOBS] - Alertas creadas: ${alertasCreadas}`);
+    console.log(`[JOBS] ════════════════════════════════════════`);
+
+    return {
+      notificaciones_procesadas: notificaciones?.length || 0,
+      alertas_creadas: alertasCreadas
+    };
+
+  } catch (err) {
+    console.error("[JOBS] Error en jobVerificarInactividad:", err.message);
+    throw err;
+  }
+}
+
+/**
+ * Obtiene las alertas pendientes para el admin
+ */
+async function obtenerAlertasAdmin() {
+  const { data, error } = await supabase
+    .from("notificaciones")
+    .select("*")
+    .eq("tipo", "alerta_admin")
+    .eq("estado", "pendiente")
+    .order("creado_en", { ascending: false });
+
+  if (error) throw new Error(`Error obteniendo alertas: ${error.message}`);
+
+  return success(data || []);
+}
+
 module.exports = {
   crearNotificacion,
   crearNotificacionInterna,
@@ -463,4 +654,8 @@ module.exports = {
   generarMensajeConfirmada,
   prepararDatosNotificacion,
   existeNotificacionHoy,
+  // Funciones de alertas admin
+  crearAlertaAdmin,
+  jobVerificarInactividad,
+  obtenerAlertasAdmin
 };

@@ -78,4 +78,14 @@ router.post("/batch-enviadas", authBotOrAdmin, async (req, res, next) => {
   }
 });
 
+// GET /api/notificaciones/admin/alertas — Obtener alertas pendientes para el admin
+router.get("/admin/alertas", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.obtenerAlertasAdmin();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

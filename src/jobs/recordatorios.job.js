@@ -228,6 +228,9 @@ async function recalcularTodasSolicitudes() {
 // Importar función de verificación global (recalcular)
 const { verificarRecordatoriosGlobal } = require("../modules/solicitudes-recarga/solicitudes-recarga.service");
 
+// Importar job de alertas inactividad
+const { jobVerificarInactividad } = require("../modules/notificaciones/notificaciones.service");
+
 /**
  * Inicializa los jobs programados.
  * Debe llamarse al iniciar el servidor.
@@ -253,19 +256,35 @@ function initJobs() {
     }
   });
 
-  // JOB 2: Recordatorios (opcional, mantener existente)
+  // JOB 2: Verificar usuarios sin respuesta (cada 6 horas)
+  const jobInactividad = cron.schedule("0 */6 * * *", async () => {
+    console.log("[JOBS] ════════════════════════════════════════");
+    console.log("[JOBS] EJECUTANDO JOB DE INACTIVIDAD - CADA 6 HORAS");
+    console.log("[JOBS] ════════════════════════════════════════");
+    try {
+      const result = await jobVerificarInactividad();
+      console.log("[JOBS] Resultado del job de inactividad:", JSON.stringify(result, null, 2));
+    } catch (error) {
+      console.error("[JOBS] Error en job de inactividad:", error.message);
+    }
+  });
+
+  // JOB 3: Recordatorios (opcional, mantener existente)
   // Este job ya no es necesario ya que jobEvaluacionRecargas hace todo
   // Se mantiene por compatibilidad si hay lógica adicional
 
   console.log("[JOBS] ✓ Job de evaluación de recargas programado para 9:00 AM");
+  console.log("[JOBS] ✓ Job de inactividad programado cada 6 horas");
   console.log("[JOBS] ✓ El job evaluará obligaciones, calculará montos y creará notificaciones");
   console.log("[JOBS] Jobs inicializados correctamente");
 
   return {
     jobRecargas,
+    jobInactividad,
     jobRecordatorios: jobRecargas, // Alias para compatibilidad
     stopAll: () => {
       jobRecargas.stop();
+      jobInactividad.stop();
       console.log("[JOBS] Todos los jobs detenido");
     },
   };
