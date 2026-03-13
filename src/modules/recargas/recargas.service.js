@@ -198,6 +198,88 @@ async function aprobarRecarga(recargaId, body, adminId) {
     }
   }
 
+  // ============================================================
+  // NUEVO: AUTO-LIMPIEZA - Cancelar notificaciones de cobro pendientes
+  // Cuando se aprueba una recarga, cancelamos las notificaciones
+  // de cobro pendientes para evitar mensajes redundantes
+  // ============================================================
+  try {
+    // Buscar notificaciones de cobro pendientes del usuario
+    const { data: notificacionesCobro, error: errorBusqueda } = await supabase
+      .from('notificaciones')
+      .select('id, tipo, estado, payload')
+      .eq('usuario_id', recarga.usuario_id)
+      .in('estado', ['pendiente', 'enviada'])
+      .in('tipo', ['solicitud_recarga', 'solicitud_recarga_inicio_mes']);
+
+    if (errorBusqueda) {
+      console.error("[RECARGAS] Error buscando notificaciones de cobro:", errorBusqueda.message);
+    } else if (notificacionesCobro && notificacionesCobro.length > 0) {
+      const idsCancelar = notificacionesCobro.map(n => n.id);
+      
+      // Actualizar estado a 'cancelada' y guardar info en payload (sin alterar el resto)
+      for (const notif of notificacionesCobro) {
+        const payloadActual = notif.payload || {};
+        payloadActual.cancelacion = {
+          cancelada_por: 'aprobar_recarga',
+          cancelada_en: new Date().toISOString(),
+          motivo: `Recarga aprobada ID: ${recargaId}`,
+          recarga_aprobada_id: recargaId
+        };
+        
+        await supabase
+          .from('notificaciones')
+          .update({ 
+            estado: 'cancelada',
+            payload: payloadActual
+          })
+          .eq('id', notif.id);
+      }
+      
+      console.log(`[RECARGAS] ${idsCancelar.length} notificaciones de cobro canceladas para usuario ${recarga.usuario_id}`);
+    }
+  } catch (err) {
+    console.error("[RECARGAS] Error en auto-limpieza de notificaciones:", err.message);
+    // No fallamos la operación principal
+  }
+
+  // ============================================================
+  // NUEVO: Actualizar solicitudes de recarga pendientes
+  // Marcar como cumplidas las solicitudes de recarga del usuario
+  // ============================================================
+  try {
+    const { data: solicitudesActualizar, error: errorSolicitudes } = await supabase
+      .from('solicitudes_recarga')
+      .select('id, monto_recargado')
+      .eq('usuario_id', recarga.usuario_id)
+      .eq('obligacion_id', recarga.periodo) // Usar periodo como referencia
+      .in('estado', ['pendiente', 'parcial']);
+
+    if (errorSolicitudes) {
+      console.error("[RECARGAS] Error buscando solicitudes de recarga:", errorSolicitudes.message);
+    } else if (solicitudesActualizar && solicitudesActualizar.length > 0) {
+      const montoRecarga = Number(recarga.monto);
+      
+      for (const sol of solicitudesActualizar) {
+        const nuevoMontoRecargado = Number(sol.monto_recargado || 0) + montoRecarga;
+        const nuevoEstado = nuevoMontoRecargado >= sol.monto_solicitado ? 'cumplida' : 'parcial';
+        
+        await supabase
+          .from('solicitudes_recarga')
+          .update({
+            monto_recargado: nuevoMontoRecargado,
+            estado: nuevoEstado,
+            actualizado_en: new Date().toISOString()
+          })
+          .eq('id', sol.id);
+      }
+      
+      console.log(`[RECARGAS] ${solicitudesActualizar.length} solicitudes de recarga actualizadas para usuario ${recarga.usuario_id}`);
+    }
+  } catch (err) {
+    console.error("[RECARGAS] Error actualizando solicitudes de recarga:", err.message);
+  }
+
   return success(updated);
 }
 
