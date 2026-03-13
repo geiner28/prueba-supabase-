@@ -15,7 +15,7 @@ async function listarClientes({ page, limit, search, plan, activo }) {
 
   let query = supabase
     .from("usuarios")
-    .select("*, ajustes_usuario(*)", { count: "exact" })
+    .select("*", { count: "exact" })
     .order("creado_en", { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -37,8 +37,80 @@ async function listarClientes({ page, limit, search, plan, activo }) {
   const { data, error, count } = await query;
   if (error) throw new Error(`Error listando clientes: ${error.message}`);
 
+  // Enriquecer cada cliente con datos de última obligación y saldo
+  const clientesEnriquecidos = await Promise.all(
+    data.map(async (cliente) => {
+      try {
+        // 1. Obtener la última obligación activa o en progreso
+        const { data: ultimaObligacion } = await supabase
+          .from("obligaciones")
+          .select("id, periodo, estado")
+          .eq("usuario_id", cliente.id)
+          .in("estado", ["activa", "en_progreso"])
+          .order("periodo", { ascending: false })
+          .limit(1)
+          .single();
+
+        let datosObligacion = {
+          total_facturas: 0,
+          facturas_pagadas: 0,
+          facturas_pendientes: 0
+        };
+
+        // 2. Si existe obligación, obtener sus facturas
+        if (ultimaObligacion) {
+          const { data: facturas } = await supabase
+            .from("facturas")
+            .select("id, estado")
+            .eq("obligacion_id", ultimaObligacion.id);
+
+          if (facturas && facturas.length > 0) {
+            datosObligacion.total_facturas = facturas.length;
+            datosObligacion.facturas_pagadas = facturas.filter(f => f.estado === "pagada").length;
+            datosObligacion.facturas_pendientes = facturas.filter(f => f.estado !== "pagada").length;
+          }
+        }
+
+        // 3. Calcular saldo global del usuario (recargas aprobadas - pagos realizados)
+        const { data: recargasData } = await supabase
+          .from("recargas")
+          .select("monto")
+          .eq("usuario_id", cliente.id)
+          .eq("estado", "aprobada");
+
+        const totalRecargas = (recargasData || []).reduce((sum, r) => sum + Number(r.monto || 0), 0);
+
+        const { data: pagosData } = await supabase
+          .from("pagos")
+          .select("monto_aplicado")
+          .eq("usuario_id", cliente.id)
+          .eq("estado", "pagado");
+
+        const totalPagos = (pagosData || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
+
+        const saldo = totalRecargas - totalPagos;
+
+        return {
+          ...cliente,
+          ultima_obligacion: ultimaObligacion ? [{
+            ...ultimaObligacion,
+            ...datosObligacion
+          }] : [],
+          saldo
+        };
+      } catch (err) {
+        console.error(`Error enriqueciendo cliente ${cliente.id}:`, err);
+        return {
+          ...cliente,
+          ultima_obligacion: [],
+          saldo: 0
+        };
+      }
+    })
+  );
+
   return success({
-    clientes: data,
+    clientes: clientesEnriquecidos,
     total: count,
     page,
     limit,
