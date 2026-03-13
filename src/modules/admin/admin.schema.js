@@ -20,4 +20,14 @@ const queryPagosHistorialSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
-module.exports = { queryClientesSchema, queryPagosHistorialSchema };
+// Schema para upsert de usuarios por admin (con campos extendidos)
+const upsertUsuarioAdminSchema = z.object({
+  telefono: z.string().min(7),
+  nombre: z.string().optional(),
+  apellido: z.string().optional(),
+  correo: z.string().email().optional(),
+  direccion: z.string().optional(),
+  plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
+});
+
+module.exports = { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema };
