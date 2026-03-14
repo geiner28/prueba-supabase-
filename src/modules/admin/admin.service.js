@@ -508,10 +508,45 @@ async function upsertUsuarioAdmin({ telefono, nombre, apellido, correo, direccio
   }, 201);
 }
 
+/**
+ * Buscar usuario por teléfono (ADMIN-ONLY)
+ */
+async function getUsuarioByTelefono(telefono) {
+  if (!telefono) {
+    return errors(400, "BAD_REQUEST", "El teléfono es requerido");
+  }
+
+  const { data, error } = await supabase
+    .from("usuarios")
+    .select("id, telefono, nombre, apellido, correo, direccion, plan, activo")
+    .eq("telefono", telefono.trim())
+    .single();
+
+  if (error && error.code !== "PGRST116") {
+    throw new Error(`Error buscando usuario: ${error.message}`);
+  }
+
+  if (!data) {
+    return errors(404, "NOT_FOUND", "Usuario no encontrado");
+  }
+
+  return success({
+    usuario_id: data.id,
+    telefono: data.telefono,
+    nombre: data.nombre,
+    apellido: data.apellido,
+    correo: data.correo,
+    direccion: data.direccion,
+    plan: data.plan,
+    activo: data.activo,
+  });
+}
+
 module.exports = {
   listarClientes,
   perfilCompletoCliente,
   historialPagos,
   dashboard,
   upsertUsuarioAdmin,
+  getUsuarioByTelefono,
 };

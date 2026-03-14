@@ -55,6 +55,16 @@ router.get("/pagos", authAdmin, validateQuery(queryPagosHistorialSchema), async 
   }
 });
 
+// GET /api/admin/users/by-telefono/:telefono — Buscar usuario por teléfono (ADMIN-ONLY)
+router.get("/users/by-telefono/:telefono", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.getUsuarioByTelefono(req.params.telefono);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/admin/users/upsert — Crear/actualizar usuario (admin-only con campos extendidos)
 router.post("/users/upsert", authAdmin, validateBody(upsertUsuarioAdminSchema), async (req, res, next) => {
   try {
