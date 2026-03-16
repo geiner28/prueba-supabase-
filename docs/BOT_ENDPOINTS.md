@@ -94,6 +94,7 @@ Todas las respuestas del API siguen exactamente este formato, sin excepciones:
 | 10 | `GET` | `/api/notificaciones/pendientes/:telefono` | Obtiene todas las notificaciones pendientes de enviar al usuario por WhatsApp |
 | 11 | `PUT` | `/api/notificaciones/:id` | Marca una notificación individual como enviada, fallida o leída |
 | 12 | `POST` | `/api/notificaciones/batch-enviadas` | Marca múltiples notificaciones como enviadas en una sola llamada |
+| 12a | `GET` | `/api/notificaciones/pendientes-hoy` | 🆕 Obtiene TODAS las notificaciones de inicio mes del día actual (global - auto-marca enviadas) |
 
 ### Pagos
 | # | Método | Endpoint | Qué hace |
@@ -907,6 +908,169 @@ x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
   "error": null
 }
 ```
+
+---
+
+## 12a. `GET /api/notificaciones/pendientes-hoy` — Obtener notificaciones de inicio mes global
+
+### ¿Qué hace?
+🆕 **Endpoint estratégico para automatización:** Devuelve TODAS las notificaciones de inicio de mes (`solicitud_recarga_inicio_mes`) del día actual, para TODOS los usuarios. Se diseñó para ser consultado una sola vez diariamente por un job automático o cron job. Automáticamente marca todas las notificaciones devueltas como `"enviadas"` para evitar duplicados en reintentos.
+
+### ¿Cuándo usarlo?
+
+- **Una sola vez por día** (típicamente a las 9:00 AM junto con el cron job de evaluación de recargas)
+- Para que un **bot global o job automático** distribuya notificaciones de inicio de mes a todos los usuarios
+- Cuando inicia un nuevo mes y el cron job `jobEvaluacionRecargas` crea las notificaciones
+- **NO es para consultas por usuario individual** — usa el endpoint 10 (pendientes/:telefono) para eso
+
+### Flujo garantizado
+
+1. **Job cron (9 AM):** Crea notificaciones de inicio mes para usuarios que detecta en esa fecha
+2. **Misma hora:** Tu bot/process consulta este endpoint
+3. **Respuesta:** Array con todos los usuarios + sus notificaciones + datos
+4. **Acción:** Tu bot envía mensaje por WhatsApp a cada `usuarios.telefono`
+5. **Automático:** Las notificaciones se marcan como `"enviada"` **en la misma consulta**
+6. **Día siguiente:** Si consultas de nuevo, devuelve vacío (todo ya está marcado)
+
+**Headers:**
+```
+x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+
+O también:
+```
+x-admin-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+
+**Parámetros:** 
+- **Sin query params**
+- **Sin body JSON**
+
+**Ejemplo de consulta:**
+```
+GET /api/notificaciones/pendientes-hoy
+```
+
+**Respuesta exitosa (200) — Hay notificaciones:**
+```json
+{
+  "ok": true,
+  "data": {
+    "total": 2,
+    "notificaciones": [
+      {
+        "id": "notif-001",
+        "usuario_id": "user-001",
+        "tipo": "solicitud_recarga_inicio_mes",
+        "canal": "whatsapp",
+        "estado": "pendiente",
+        "payload": {
+          "tipo_mensaje": "inicio_mes",
+          "nombre_usuario": "Laura Durán",
+          "mes_actual": "Marzo 2026",
+          "mes_anterior": "Febrero 2026",
+          "obligaciones": [
+            { "etiqueta": "energia", "monto": 85000 },
+            { "etiqueta": "gas", "monto": 50950 }
+          ],
+          "total_obligaciones": 135950,
+          "saldo_actual": 0,
+          "valor_a_recargar": 135950,
+          "es_primera_recarga": true,
+          "obligacion_id": "obl-123",
+          "periodo": "2026-03-01",
+          "mensaje": "Hola Laura Durán ✌🏼\nArrancamos mes!\n\nEn Febrero pagaste $ 0 y tienes un saldo de $ 0\n\nPara Marzo, tus obligaciones suman $ 135,950, así:\n\n\"@energia\": \"$ 85,000\".\n\"@gas\": \"$ 50,950\".\n\nLa recarga total sugerida para Marzo es de $ 135,950.\n\nPuedes hacer la recarga a la llave 0090944088.\n\nApenas la hagas, me envías el comprobante y yo me encargo del resto deOne! 🙌🏼"
+        },
+        "usuarios": {
+          "nombre": "Laura",
+          "apellido": "Durán",
+          "telefono": "573046757626"
+        },
+        "creado_en": "2026-03-16T09:00:15.000Z"
+      }
+    ]
+  },
+  "error": null
+}
+```
+
+**Respuesta exitosa (200) — Sin notificaciones:**
+```json
+{
+  "ok": true,
+  "data": {
+    "total": 0,
+    "notificaciones": []
+  },
+  "error": null
+}
+```
+
+### Campos importantes en respuesta
+
+| Campo | Descripción |
+|-------|-------------|
+| `id` | UUID único de la notificación |
+| `tipo` | Siempre `"solicitud_recarga_inicio_mes"` para este endpoint |
+| `estado` | `"pendiente"` — pero se marca a `"enviada"` automáticamente |
+| `payload.mensaje` | **Texto final listo para enviar por WhatsApp** — no requiere post-procesamiento |
+| `payload.valor_a_recargar` | Cantidad recomendada a recargar = obligaciones - saldo actual |
+| `usuarios.telefono` | Número WhatsApp destino para el envío |
+| `creado_en` | Timestamp de cuándo se generó automáticamente |
+
+### Implementación típica en Python/Node.js
+
+```javascript
+// En tu job que corre cada día a las 9:00 AM
+
+async function enviarNotificacionesInicioMes() {
+  // 1. Consultar notificaciones de hoy
+  const response = await fetch('http://localhost:3001/api/notificaciones/pendientes-hoy', {
+    method: 'GET',
+    headers: {
+      'x-bot-api-key': 'TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3'
+    }
+  });
+  
+  const { ok, data } = await response.json();
+  
+  if (!ok || data.total === 0) {
+    console.log('No hay notificaciones para enviar hoy');
+    return;
+  }
+  
+  // 2. Iterar sobre cada notificación
+  for (const notificacion of data.notificaciones) {
+    const telefonoDestino = notificacion.usuarios.telefono;
+    const mensaje = notificacion.payload.mensaje;
+    
+    // 3. Enviar por WhatsApp (usando tu bot)
+    await enviarPorWhatsApp(telefonoDestino, mensaje);
+    
+    console.log(`✅ Notificación enviada a ${telefonoDestino}`);
+  }
+  
+  // ¡Listo! Las notificaciones ya están marcadas como "enviadas"
+  // No necesitas hacer nada más
+  console.log(`${data.total} notificaciones de inicio mes distribuidas`);
+}
+```
+
+### Casos especiales
+
+**¿Qué pasa si consulto 2 veces en el mismo día?**
+- 1ª consulta: Devuelve 5 notificaciones, las marca como enviadas
+- 2ª consulta: Devuelve vacío `[]` (todas ya están marcadas)
+
+**¿Qué pasa si mi job falla mientras envía?**
+- Las notificaciones se devolvieron pero se marcaron como `"enviada"`
+- Retiene el log de que fueron "enviadas" pero sin confirmación de WhatsApp
+- Para reintentos, usa el endpoint 10 (pendientes/:telefono) con el usuario específico
+
+**¿Cómo sé si un usuario recibió el mensaje?**
+- Este endpoint solo marca como `"enviada"` (salió del sistema)
+- El estado de WhatsApp (leído, fallido) se trackea en un campo separado `ultimo_error`
+- Puedes consultar con el endpoint 3 (listar notificaciones) filtradas por `estado=enviada` y revisar `ultimo_error`
 
 ---
 

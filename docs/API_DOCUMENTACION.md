@@ -1880,6 +1880,209 @@ x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
 
 ---
 
+### 9.7 `GET /api/notificaciones/pendientes-hoy` — Obtener notificaciones de inicio de mes global
+
+> 🤖👨‍💼 **Endpoint estratégico para bot de distribución:** Devuelve TODAS las notificaciones de inicio de mes (`solicitud_recarga_inicio_mes`) del día actual de TODOS los usuarios. Marca automáticamente como "enviadas" al consultar, evitando duplicados. Diseñado para ser llamado una sola vez diariamente por un job o cron job.
+
+### ¿Qué hace?
+
+Este endpoint es la puerta principal para que un **bot global o job automaizado** distribuya notificaciones de inicio de mes a todos los usuarios en una única consulta. Tras obtener los datos:
+
+1. Devuelve todas las notificaciones de tipo `solicitud_recarga_inicio_mes` creadas hoy en estado `pendiente`
+2. Incluye los datos del usuario (nombre, apellido, teléfono) para facilitar el envío
+3. **Automáticamente marca TODAS como `"enviada"`** en la misma operación
+
+### ¿Cuándo usarlo?
+
+- **Consulta diaria única** (9:00 AM, inicio de mes, etc.)
+- Para un **job que automatiza el envío masivo** de notificaciones de inicio de mes
+- **SOLO UNA vez al día** — el marcado automático evita duplicados
+- Después de consultar, todas las notificaciones están marcadas y no se repiten
+
+### Comportamiento garantizado
+
+| Aspecto | Detalles |
+|---------|----------|
+| **Filtros automáticos** | Solo `estado = "pendiente"` + `tipo = "solicitud_recarga_inicio_mes"` + fecha creado hoy |
+| **Exlusiones** | Excluye automáticamente `tipo = "alerta_admin"` |
+| **Marcado automático** | Cambia estado a `"enviada"` en la MISMA consulta |
+| **Idempotencia** | Si se consulta 2 veces en el mismo día, la 2ª vez devuelve vacío (ya marcadas) |
+| **Confiabilidad** | Si el job falla, las notificaciones siguen en `"pendiente"` para reintentos |
+
+**Headers:**
+```
+x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+
+O indistintamente:
+```
+x-admin-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+
+**Parámetros:** Ninguno (sin query params ni body)
+
+**Ejemplo:**
+```
+GET /api/notificaciones/pendientes-hoy
+```
+
+**Respuesta exitosa (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "total": 3,
+    "notificaciones": [
+      {
+        "id": "e4c9a1f2-...",
+        "usuario_id": "user-001",
+        "tipo": "solicitud_recarga_inicio_mes",
+        "canal": "whatsapp",
+        "estado": "pendiente",
+        "payload": {
+          "tipo_mensaje": "inicio_mes",
+          "nombre_usuario": "Laura Durán",
+          "mes_actual": "Marzo 2026",
+          "mes_anterior": "Febrero 2026",
+          "obligaciones": [
+            {
+              "etiqueta": "energia",
+              "monto": 85000
+            },
+            {
+              "etiqueta": "gas",
+              "monto": 50950
+            }
+          ],
+          "total_obligaciones": 135950,
+          "saldo_actual": 0,
+          "valor_a_recargar": 135950,
+          "es_primera_recarga": true,
+          "obligacion_id": "obl-123",
+          "periodo": "2026-03-01",
+          "mensaje": "Hola Laura Durán ✌🏼\nArrancamos mes!\n\nEn Febrero pagaste $ 0 y tienes un saldo de $ 0\n\nPara Marzo, tus obligaciones suman $ 135,950, así:\n\n\"@energia\": \"$ 85,000\".\n\"@gas\": \"$ 50,950\".\n\nLa recarga total sugerida para Marzo es de $ 135,950.\n\nPuedes hacer la recarga a la llave 0090944088.\n\nApenas la hagas, me envías el comprobante y yo me encargo del resto deOne! 🙌🏼"
+        },
+        "usuarios": {
+          "nombre": "Laura",
+          "apellido": "Durán",
+          "telefono": "573046757626"
+        },
+        "creado_en": "2026-03-16T09:00:15.000Z"
+      },
+      {
+        "id": "f5d1b2e3-...",
+        "usuario_id": "user-002",
+        "tipo": "solicitud_recarga_inicio_mes",
+        "canal": "whatsapp",
+        "estado": "pendiente",
+        "payload": {
+          "tipo_mensaje": "inicio_mes",
+          "nombre_usuario": "Carlos Pérez",
+          "mes_actual": "Marzo 2026",
+          "mes_anterior": "Febrero 2026",
+          "obligaciones": [
+            {
+              "etiqueta": "internet",
+              "monto": 120000
+            }
+          ],
+          "total_obligaciones": 120000,
+          "saldo_actual": 25000,
+          "valor_a_recargar": 95000,
+          "es_primera_recarga": true,
+          "obligacion_id": "obl-456",
+          "periodo": "2026-03-01",
+          "mensaje": "Hola Carlos Pérez ✌🏼\nArrancamos mes!\n\nEn Febrero pagaste $ 120,000 y tienes un saldo de $ 25,000\n\nPara Marzo, tus obligaciones suman $ 120,000, así:\n\n\"@internet\": \"$ 120,000\".\n\nLa recarga total sugerida para Marzo es de $ 95,000.\n\nPuedes hacer la recarga a la llave 0090944088.\n\nApenas la hagas, me envías el comprobante y yo me encargo del resto deOne! 🙌🏼"
+        },
+        "usuarios": {
+          "nombre": "Carlos",
+          "apellido": "Pérez",
+          "telefono": "3001112233"
+        },
+        "creado_en": "2026-03-16T09:00:20.000Z"
+      }
+    ]
+  },
+  "error": null
+}
+```
+
+**Cuando NO hay notificaciones pendientes (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "total": 0,
+    "notificaciones": []
+  },
+  "error": null
+}
+```
+
+### Explicación de campos en respuesta
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `id` | `string (UUID)` | Identificador único de la notificación |
+| `usuario_id` | `string` | UUID del usuario que recibirá la notificación |
+| `tipo` | `string` | Siempre `"solicitud_recarga_inicio_mes"` para este endpoint |
+| `canal` | `string` | `"whatsapp"` — canal de distribución |
+| `estado` | `string` | Será `"pendiente"` en la consulta, pero luego se marca automáticamente a `"enviada"` |
+| `payload` | `object` | Datos estructurados de la notificación (ver detalles abajo) |
+| `usuarios` | `object` | Datos del usuario: `nombre`, `apellido`, `telefono` |
+| `creado_en` | `string (ISO 8601)` | Timestamp de cuándo se creó la notificación |
+
+### Explicación de campos en `payload`
+
+| Campo | Descripción |
+|-------|-------------|
+| `tipo_mensaje` | `"inicio_mes"` — tipo de template a usar |
+| `nombre_usuario` | Nombre completo del usuario para personalizar el mensaje |
+| `mes_actual` | Nombre y año del mes actual (ej: "Marzo 2026") |
+| `mes_anterior` | Nombre y año del mes anterior (ej: "Febrero 2026") |
+| `obligaciones` | Array de facturas/servicios con `etiqueta` (internet, gas, etc.) y `monto` |
+| `total_obligaciones` | Suma de montos de todas las obligaciones |
+| `saldo_actual` | Dinero disponible que el usuario ya recargó y no ha usado |
+| `valor_a_recargar` | Cantidad sugerida a recargar = `total_obligaciones - saldo_actual` |
+| `es_primera_recarga` | `true` = primer mes del usuario, `false` = mes recurrente |
+| `obligacion_id` | UUID de la obligación asociada |
+| `periodo` | Periodo en formato `"YYYY-MM-DD"` |
+| `mensaje` | **Texto listo para enviar por WhatsApp** — mensaje formateado con datos del usuario |
+
+### Tamaño y desempeño
+
+- **Por usuario:** Máximo 1 notificación de inicio de mes al día
+- **Respuesta típica:** 2-50 usuarios por día = 2-50 registros en la respuesta
+- **Tiempo de query:** ~100-200ms (incluye lectura + actualización de estados)
+
+### Errores posibles
+
+```json
+{ "code": "UNAUTHORIZED", "message": "API Key inválida o ausente" }
+```
+
+Ningún otro error esperado. Si algo falla internamente, retorna `500 INTERNAL_ERROR`.
+
+### Caso de uso — Job cron diario
+
+```bash
+# Cada día a las 9:00 AM, tu job ejecuta:
+GET /api/notificaciones/pendientes-hoy
+
+# Respuesta trae 5 usuarios con sus notificaciones
+
+# Tu bot entonces:
+# 1. Itera sobre cada notificación
+# 2. Envía payload.mensaje por WhatsApp a usuarios[].telefono
+# 3. NO necesita marcar como enviada — ya estuvieron marcadas
+
+# Al día siguiente, endpoint devuelve [] (vacío)
+# Cuando inicia nuevo mes, cron job crea nuevas notificaciones
+# Job consulta de nuevo y se repite el ciclo
+```
+
+---
+
 ## 10. Admin Dashboard (`/api/admin`)
 
 > Todos los endpoints de esta sección requieren `x-admin-api-key`.

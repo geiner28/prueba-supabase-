@@ -178,7 +178,7 @@ async function obtenerPendientesHoyGlobal() {
     .from("notificaciones")
     .select("*, usuarios(nombre, apellido, telefono)")
     .eq("estado", "pendiente")
-    .not("tipo", "eq", "alerta_admin")
+    .eq("tipo", "solicitud_recarga_inicio_mes")
     .gte("creado_en", inicioDia)
     .lte("creado_en", finDia)
     .order("creado_en", { ascending: true });
