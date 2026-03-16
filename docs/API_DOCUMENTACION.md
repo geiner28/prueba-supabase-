@@ -9,7 +9,7 @@
 
 ## 📋 Índice
 
-1. [Información General](#-información-general)
+1. [Informaión General](#-información-general)
 2. [Autenticación](#-autenticación)
 3. [Formato Estándar de Respuesta](#-formato-estándar-de-respuesta)
 4. [Códigos HTTP y Errores](#-códigos-http-y-errores)
