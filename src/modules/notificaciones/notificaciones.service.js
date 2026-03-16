@@ -165,6 +165,51 @@ async function obtenerPendientesUsuario(telefono) {
 }
 
 /**
+ * Obtener notificaciones pendientes de HOY para TODOS los usuarios (uso bot global).
+ * CHATBOT PASIVO GLOBAL: Al consultar, cambia automáticamente el estado a 'enviada'
+ * para evitar duplicados cuando múltiples workers/procesos consumen cola.
+ */
+async function obtenerPendientesHoyGlobal() {
+  const ahora = new Date();
+  const inicioDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0).toISOString();
+  const finDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 23, 59, 59).toISOString();
+
+  const { data: pendientes, error: queryError } = await supabase
+    .from("notificaciones")
+    .select("*, usuarios(nombre, apellido, telefono)")
+    .eq("estado", "pendiente")
+    .not("tipo", "eq", "alerta_admin")
+    .gte("creado_en", inicioDia)
+    .lte("creado_en", finDia)
+    .order("creado_en", { ascending: true });
+
+  if (queryError) throw new Error(`Error buscando notificaciones pendientes de hoy: ${queryError.message}`);
+
+  if (pendientes && pendientes.length > 0) {
+    const idsActualizar = pendientes.map((notificacion) => notificacion.id);
+
+    const { error: updateError } = await supabase
+      .from("notificaciones")
+      .update({
+        estado: "enviada",
+        ultimo_error: null,
+      })
+      .in("id", idsActualizar);
+
+    if (updateError) {
+      console.error("[NOTIFICACIONES] Error cambiando estado a enviada (global):", updateError.message);
+    } else {
+      console.log(`[NOTIFICACIONES] ${idsActualizar.length} notificaciones de hoy marcadas como enviadas (global)`);
+    }
+  }
+
+  return success({
+    total: (pendientes || []).length,
+    notificaciones: pendientes || [],
+  });
+}
+
+/**
  * Marcar notificación como enviada/fallida/leída.
  */
 async function actualizarEstadoNotificacion(notificacionId, { estado, ultimo_error }) {
@@ -645,6 +690,7 @@ module.exports = {
   crearNotificacionMasiva,
   listarNotificaciones,
   obtenerPendientesUsuario,
+  obtenerPendientesHoyGlobal,
   actualizarEstadoNotificacion,
   marcarEnviadasBatch,
   // Nuevas funciones para el flujo de recargas

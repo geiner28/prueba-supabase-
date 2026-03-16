@@ -1,6 +1,6 @@
 # 📘 DeOne Backend — Documentación Completa de API
 
-> **Última actualización:** 19 de febrero de 2026  
+> **Última actualización:** 13 de marzo de 2026  
 > **Versión:** 2.0  
 > **Base URL local:** `http://localhost:3001/api`  
 > **Base URL producción (Render):** `https://tu-app.onrender.com/api`
@@ -22,11 +22,12 @@
    - [Disponibilidad (Saldo)](#6-disponibilidad-saldo-apidisponible) (1 endpoint)
    - [Pagos](#7-pagos-apipagos) (3 endpoints)
    - [Revisiones Admin](#8-revisiones-admin-apirevisiones) (3 endpoints)
-   - [Notificaciones](#9-notificaciones-apinotificaciones) (6 endpoints)
+  - [Notificaciones](#9-notificaciones-apinotificaciones) (7 endpoints)
    - [Admin Dashboard](#10-admin-dashboard-apiadmin) (4 endpoints)
 6. [Máquinas de Estado](#-máquinas-de-estado)
 7. [Comportamientos Automáticos](#-comportamientos-automáticos)
 8. [Flujo Completo — Caso Real con Datos de Prueba](#-flujo-completo--caso-real-con-datos-de-prueba)
+9. [Guía para Nuevo Frontend de Administración](#-guía-para-nuevo-frontend-de-administración)
 
 ---
 
@@ -39,7 +40,7 @@
 | **Framework** | Express 5 + Node.js |
 | **Base de datos** | Supabase (PostgreSQL) |
 | **Validación** | Zod (body y query params) |
-| **Total de endpoints** | **34** |
+| **Total de endpoints** | **35** |
 
 ---
 
@@ -2399,7 +2400,7 @@ POST /api/notificaciones/batch-enviadas → {"ids":[...]} (o batch)
 
 ---
 
-## 📊 Tabla Resumen — 34 Endpoints
+## 📊 Tabla Resumen — 35 Endpoints
 
 | # | Método | Endpoint | Auth | Descripción |
 |---|--------|----------|------|-------------|
@@ -2430,11 +2431,159 @@ POST /api/notificaciones/batch-enviadas → {"ids":[...]} (o batch)
 | 25 | `POST` | `/api/notificaciones/masiva` | 👨‍💼 | Notificación masiva |
 | 26 | `GET` | `/api/notificaciones` | 👨‍💼 | Listar notificaciones |
 | 27 | `GET` | `/api/notificaciones/pendientes/:tel` | 🤖👨‍💼 | Pendientes de usuario |
-| 28 | `PUT` | `/api/notificaciones/:id` | 🤖👨‍💼 | Actualizar notificación |
-| 29 | `POST` | `/api/notificaciones/batch-enviadas` | 🤖👨‍💼 | Batch marcar enviadas |
-| 30 | `GET` | `/api/admin/dashboard` | 👨‍💼 | Dashboard métricas |
-| 31 | `GET` | `/api/admin/clientes` | 👨‍💼 | Listar clientes |
-| 32 | `GET` | `/api/admin/clientes/:tel` | 👨‍💼 | Perfil completo cliente |
-| 33 | `GET` | `/api/admin/pagos` | 👨‍💼 | Historial pagos |
+| 28 | `GET` | `/api/notificaciones/pendientes-hoy` | 🤖👨‍💼 | Pendientes globales de hoy (auto-mark enviada) |
+| 29 | `PUT` | `/api/notificaciones/:id` | 🤖👨‍💼 | Actualizar notificación |
+| 30 | `POST` | `/api/notificaciones/batch-enviadas` | 🤖👨‍💼 | Batch marcar enviadas |
+| 31 | `GET` | `/api/notificaciones/admin/alertas` | 👨‍💼 | Alertas admin pendientes |
+| 32 | `GET` | `/api/admin/dashboard` | 👨‍💼 | Dashboard métricas |
+| 33 | `GET` | `/api/admin/clientes` | 👨‍💼 | Listar clientes |
+| 34 | `GET` | `/api/admin/clientes/:tel` | 👨‍💼 | Perfil completo cliente |
+| 35 | `GET` | `/api/admin/pagos` | 👨‍💼 | Historial pagos |
 
 **Leyenda:** 🔓 Sin auth · 🤖 Bot (`x-bot-api-key`) · 👨‍💼 Admin (`x-admin-api-key`) · 🤖👨‍💼 Ambos
+
+---
+
+## 🧭 Guía para Nuevo Frontend de Administración
+
+Esta sección define cómo construir el nuevo panel admin sin adivinar contratos de API.
+
+### 1) Header de autenticación (obligatorio)
+
+Todas las llamadas del frontend admin deben enviar:
+
+```http
+x-admin-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+
+Opcional (si quieres trazabilidad por operador):
+
+```http
+x-admin-id: <uuid-del-admin-logueado>
+```
+
+---
+
+### 2) Mapa de pantallas → endpoints
+
+#### A. Dashboard principal
+
+- `GET /api/admin/dashboard`
+- Objetivo UI: tarjetas KPI, conteos por estado, resumen operativo del día.
+
+#### B. Clientes (tabla + filtros)
+
+- `GET /api/admin/clientes?page=1&limit=20&search=&plan=&activo=`
+- Filtros soportados:
+  - `page` (min 1)
+  - `limit` (1 a 100)
+  - `search` (texto libre)
+  - `plan` (`control`, `tranquilidad`, `respaldo`)
+  - `activo` (`true/false`)
+
+#### C. Perfil completo de cliente
+
+- `GET /api/admin/clientes/:telefono`
+- Objetivo UI: ficha 360 (usuario, obligaciones, facturas, recargas, pagos, saldo).
+
+#### D. Historial de pagos
+
+- `GET /api/admin/pagos?page=1&limit=20&telefono=&periodo=&estado=`
+- Filtros soportados: `telefono`, `periodo`, `estado`, `page`, `limit`.
+
+#### E. Cola de revisiones (operación diaria)
+
+- `GET /api/revisiones?tipo=factura|recarga&estado=pendiente|en_proceso|resuelta|descartada`
+- `PUT /api/revisiones/:id/tomar`
+- `PUT /api/revisiones/:id/descartar`
+
+#### F. Moderación de facturas y recargas
+
+- Facturas:
+  - `PUT /api/facturas/:id/validar`
+  - `PUT /api/facturas/:id/rechazar`
+- Recargas:
+  - `PUT /api/recargas/:id/aprobar`
+  - `PUT /api/recargas/:id/rechazar`
+
+#### G. Notificaciones para operación
+
+- `GET /api/notificaciones?telefono=&tipo=&estado=&limit=&offset=`
+- `GET /api/notificaciones/admin/alertas` (alertas pendientes por inactividad)
+
+---
+
+### 3) Flujo recomendado del panel admin
+
+1. Abrir dashboard (`/api/admin/dashboard`).
+2. Entrar a revisiones (`/api/revisiones?estado=pendiente`).
+3. Tomar revisión (`PUT /tomar`).
+4. Resolver por tipo:
+   - factura → validar/rechazar
+   - recarga → aprobar/rechazar
+5. Verificar impacto en cliente (`/api/admin/clientes/:telefono`).
+6. Monitorear alertas (`/api/notificaciones/admin/alertas`).
+
+---
+
+### 4) Integración con bot (nuevo endpoint global)
+
+Para coordinación con el bot se agregó:
+
+- `GET /api/notificaciones/pendientes-hoy` (🤖👨‍💼)
+
+Comportamiento:
+
+1. Devuelve notificaciones de **hoy** con `estado = "pendiente"`.
+2. Excluye `tipo = "alerta_admin"`.
+3. En la misma consulta las marca a `estado = "enviada"` para evitar doble entrega.
+
+Respuesta:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "total": 2,
+    "notificaciones": [
+      {
+        "id": "uuid-notificacion",
+        "tipo": "solicitud_recarga",
+        "estado": "pendiente",
+        "payload": { "mensaje": "Hola..." },
+        "usuarios": {
+          "nombre": "Carlos",
+          "apellido": "Pérez",
+          "telefono": "3001112233"
+        }
+      }
+    ]
+  },
+  "error": null
+}
+```
+
+---
+
+### 5) Reglas UI importantes
+
+- Siempre mostrar estados con color por entidad (`pendiente`, `en_proceso`, `resuelta`, etc.).
+- Si una acción devuelve `409`, refrescar datos y mostrar mensaje de transición inválida.
+- Si una acción devuelve `401`, redirigir al login/admin-key input.
+- Para tablas con paginación, persistir filtros en query string del frontend.
+
+---
+
+### 6) Checklist técnico para iniciar frontend admin
+
+- Base URL configurable por entorno (`localhost`/`render`).
+- Cliente HTTP único (interceptor para `x-admin-api-key`).
+- Módulos sugeridos:
+  - `dashboard`
+  - `clientes`
+  - `revisiones`
+  - `pagos`
+  - `notificaciones`
+- Manejo estándar de respuesta `{ ok, data, error }`.
+- Tabla reutilizable con filtros y paginación para clientes/pagos/revisiones.
+

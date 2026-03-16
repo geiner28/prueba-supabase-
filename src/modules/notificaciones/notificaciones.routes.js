@@ -54,6 +54,16 @@ router.get("/pendientes/:telefono", authBotOrAdmin, async (req, res, next) => {
   }
 });
 
+// GET /api/notificaciones/pendientes-hoy — Notificaciones pendientes de hoy (global para bot)
+router.get("/pendientes-hoy", authBotOrAdmin, async (req, res, next) => {
+  try {
+    const result = await service.obtenerPendientesHoyGlobal();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PUT /api/notificaciones/:id — Actualizar estado de notificación
 router.put("/:id", authBotOrAdmin, validateBody(actualizarEstadoNotificacionSchema), async (req, res, next) => {
   try {
