@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DeOne Backend API — Generador de PDF profesional
-Solo endpoints del Bot (17 endpoints + cron jobs)
+Solo endpoints del Bot (18 endpoints + cron jobs)
 Usa fuentes TTF (Arial + Courier New) para soporte Unicode completo.
 """
 from fpdf import FPDF
@@ -27,8 +27,6 @@ WARN_BD   = (220, 170, 20)
 OK_BG     = (232, 255, 243)
 OK_BD     = (39, 174, 96)
 
-SUPP = '/System/Library/Fonts/Supplemental'
-
 def ce(t):
     """Remove emojis."""
     for e in ['🤖','🔐','📦','📋','🆕','🔄','💡','⚙️','📨','📅','🔁','🗂️',
@@ -41,12 +39,6 @@ class PDF(FPDF):
     def __init__(self):
         super().__init__('P', 'mm', 'A4')
         self.set_auto_page_break(auto=True, margin=22)
-        self.add_font('sans', '', os.path.join(SUPP, 'Arial.ttf'))
-        self.add_font('sans', 'B', os.path.join(SUPP, 'Arial Bold.ttf'))
-        self.add_font('sans', 'I', os.path.join(SUPP, 'Arial Italic.ttf'))
-        self.add_font('sans', 'BI', os.path.join(SUPP, 'Arial Bold Italic.ttf'))
-        self.add_font('mono', '', os.path.join(SUPP, 'Courier New.ttf'))
-        self.add_font('mono', 'B', os.path.join(SUPP, 'Courier New Bold.ttf'))
 
     def header(self):
         if self.page_no() <= 1:
@@ -54,10 +46,10 @@ class PDF(FPDF):
         self.set_draw_color(*PRIMARY)
         self.set_line_width(0.6)
         self.line(15, 10, 195, 10)
-        self.set_font('sans', 'I', 7)
+        self.set_font('helvetica', 'I', 7)
         self.set_text_color(*MUTED)
         self.set_xy(15, 11)
-        self.cell(90, 5, 'DeOne Backend — API Endpoints Bot')
+        self.cell(90, 5, 'DeOne Backend - API Endpoints Bot')
         self.set_xy(105, 11)
         self.cell(90, 5, 'Documento Confidencial', align='R')
         self.ln(8)
@@ -70,9 +62,9 @@ class PDF(FPDF):
         self.set_line_width(0.3)
         self.line(15, self.get_y(), 195, self.get_y())
         self.ln(2)
-        self.set_font('sans', '', 7)
+        self.set_font('helvetica', '', 7)
         self.set_text_color(*MUTED)
-        self.cell(90, 4, '12 de marzo de 2026')
+        self.cell(90, 4, '16 de marzo de 2026')
         self.cell(90, 4, f'Pagina {self.page_no() - 1}', align='R')
 
 
@@ -83,7 +75,7 @@ def section(pdf, title):
     pdf.add_page()
     pdf.set_fill_color(*PRIMARY)
     pdf.rect(15, pdf.get_y(), 180, 11, 'F')
-    pdf.set_font('sans', 'B', 12)
+    pdf.set_font('helvetica', 'B', 12)
     pdf.set_text_color(*WHITE)
     pdf.set_x(19)
     pdf.cell(172, 11, ce(title))
@@ -98,7 +90,7 @@ def sub(pdf, title):
     pdf.set_line_width(0.6)
     pdf.line(15, pdf.get_y(), 195, pdf.get_y())
     pdf.ln(2)
-    pdf.set_font('sans', 'B', 10.5)
+    pdf.set_font('helvetica', 'B', 10.5)
     pdf.set_text_color(*SECONDARY)
     pdf.cell(0, 7, ce(title), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1)
@@ -107,7 +99,7 @@ def sub3(pdf, title):
     """Level 3 header."""
     if pdf.get_y() > 260:
         pdf.add_page()
-    pdf.set_font('sans', 'B', 9)
+    pdf.set_font('helvetica', 'B', 9)
     pdf.set_text_color(*DARK)
     pdf.cell(0, 5, ce(title), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1)
@@ -116,7 +108,7 @@ def para(pdf, text):
     """Paragraph."""
     if pdf.get_y() > 265:
         pdf.add_page()
-    pdf.set_font('sans', '', 8.5)
+    pdf.set_font('helvetica', '', 8.5)
     pdf.set_text_color(*TEXT_CLR)
     pdf.multi_cell(0, 4.5, ce(text))
     pdf.ln(2)
@@ -129,7 +121,7 @@ def note(pdf, text, kind='info'):
     bg_map = {'info': INFO_BG, 'warn': WARN_BG, 'ok': OK_BG}
     bd = bd_map.get(kind, INFO_BD)
     bg = bg_map.get(kind, INFO_BG)
-    pdf.set_font('sans', '', 8)
+    pdf.set_font('helvetica', '', 8)
     t = ce(text)
     # Measure height
     w = 168
@@ -166,7 +158,7 @@ def codeblock(pdf, text, lang=''):
     # Language badge
     if lang:
         pdf.set_fill_color(*DARK)
-        pdf.set_font('sans', 'B', 6)
+        pdf.set_font('helvetica', 'B', 6)
         pdf.set_text_color(*WHITE)
         bw = pdf.get_string_width(lang) + 6
         pdf.set_xy(15, y_start)
@@ -174,7 +166,7 @@ def codeblock(pdf, text, lang=''):
         y_start += 4
 
     # Render in page-chunks
-    pdf.set_font('mono', '', 7)
+    pdf.set_font('courier', '', 7)
     remaining = list(raw_lines)
     block_start_y = y_start
 
@@ -193,7 +185,7 @@ def codeblock(pdf, text, lang=''):
         pdf.rect(15, block_start_y, 180, block_h, 'DF')
 
         # Draw text ON TOP using pdf.text() which is the most reliable method
-        pdf.set_font('mono', '', 7)
+        pdf.set_font('courier', '', 7)
         pdf.set_text_color(45, 45, 45)
         cy = block_start_y + PAD
         for line in chunk:
@@ -224,7 +216,7 @@ def table(pdf, headers, rows, widths=None):
     def draw_hdr():
         y = pdf.get_y()
         pdf.set_fill_color(*TBL_HEAD)
-        pdf.set_font('sans', 'B', 7)
+        pdf.set_font('helvetica', 'B', 7)
         pdf.set_text_color(*WHITE)
         for i, h in enumerate(headers):
             pdf.set_xy(x0 + sum(widths[:i]), y)
@@ -239,7 +231,7 @@ def table(pdf, headers, rows, widths=None):
             draw_hdr()
 
         bg = TBL_ALT if ri % 2 == 0 else WHITE
-        pdf.set_font('sans', '', 7)
+        pdf.set_font('helvetica', '', 7)
 
         # Calculate row height
         cell_texts = [ce(str(c)) for c in row]
@@ -277,37 +269,37 @@ def build():
     pdf.rect(0, 0, 210, 3, 'F')
 
     pdf.set_y(38)
-    pdf.set_font('sans', 'B', 38)
+    pdf.set_font('helvetica', 'B', 38)
     pdf.set_text_color(*WHITE)
     pdf.cell(0, 14, 'DeOne', align='C', new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font('sans', '', 13)
+    pdf.set_font('helvetica', '', 13)
     pdf.set_text_color(180, 220, 240)
     pdf.cell(0, 7, 'BACKEND API', align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.set_draw_color(*ACCENT)
     pdf.set_line_width(1.5)
     pdf.line(75, 68, 135, 68)
     pdf.set_y(74)
-    pdf.set_font('sans', '', 14)
+    pdf.set_font('helvetica', '', 14)
     pdf.set_text_color(*WHITE)
     pdf.cell(0, 9, 'Documentacion de Endpoints para Bot', align='C', new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font('sans', '', 10)
+    pdf.set_font('helvetica', '', 10)
     pdf.set_text_color(180, 220, 240)
     pdf.cell(0, 7, 'Integracion WhatsApp', align='C', new_x="LMARGIN", new_y="NEXT")
 
     # Cards
     pdf.set_y(138)
-    cards = [('17', 'Endpoints\nBot', SECONDARY), ('2', 'Cron Jobs\nAutomaticos', ACCENT), ('4', 'Modulos\nPrincipales', PRIMARY)]
+    cards = [('18', 'Endpoints\nBot', SECONDARY), ('2', 'Cron Jobs\nAutomaticos', ACCENT), ('4', 'Modulos\nPrincipales', PRIMARY)]
     for i, (n, l, clr) in enumerate(cards):
         x = 25 + i * 60
         pdf.set_fill_color(*WHITE)
         pdf.rect(x, 138, 50, 33, 'F')
         pdf.set_fill_color(*clr)
         pdf.rect(x, 138, 50, 3, 'F')
-        pdf.set_font('sans', 'B', 24)
+        pdf.set_font('helvetica', 'B', 24)
         pdf.set_text_color(*clr)
         pdf.set_xy(x, 143)
         pdf.cell(50, 10, n, align='C')
-        pdf.set_font('sans', '', 7.5)
+        pdf.set_font('helvetica', '', 7.5)
         pdf.set_text_color(*MUTED)
         pdf.set_xy(x, 155)
         pdf.multi_cell(50, 3.5, l, align='C')
@@ -317,15 +309,15 @@ def build():
                      ('Version:', '2.0 - 12 de marzo de 2026'),
                      ('Clasificacion:', 'Documento Tecnico Confidencial')]:
         pdf.set_x(35)
-        pdf.set_font('sans', 'B', 8.5)
+        pdf.set_font('helvetica', 'B', 8.5)
         pdf.set_text_color(*TEXT_CLR)
         pdf.cell(30, 6, lab)
-        pdf.set_font('sans', '', 8.5)
+        pdf.set_font('helvetica', '', 8.5)
         pdf.cell(120, 6, val, new_x="LMARGIN", new_y="NEXT")
 
     # ══════ TOC ══════
     pdf.add_page()
-    pdf.set_font('sans', 'B', 18)
+    pdf.set_font('helvetica', 'B', 18)
     pdf.set_text_color(*PRIMARY)
     pdf.cell(0, 10, 'Tabla de Contenido', new_x="LMARGIN", new_y="NEXT")
     pdf.set_draw_color(*ACCENT)
@@ -339,7 +331,7 @@ def build():
         ('4', 'Facturas', 'Endpoints 6-7'),
         ('5', 'Recargas (Depositos de Dinero)', 'Endpoint 8'),
         ('6', 'Saldo Disponible', 'Endpoint 9'),
-        ('7', 'Notificaciones', 'Endpoints 10-12'),
+        ('7', 'Notificaciones', 'Endpoints 10-12a'),
         ('8', 'Pagos', 'Endpoint 13'),
         ('9', 'Solicitudes de Recarga Automaticas', 'Endpoints 14-17'),
         ('10', 'Flujo Completo del Sistema'),
@@ -351,17 +343,17 @@ def build():
         n, t = item[0], item[1]
         d = item[2] if len(item) > 2 else ''
         pdf.set_fill_color(*PRIMARY)
-        pdf.set_font('sans', 'B', 8)
+        pdf.set_font('helvetica', 'B', 8)
         pdf.set_text_color(*WHITE)
         bw = 8 if len(n) < 2 else 10
         pdf.set_x(15)
         pdf.cell(bw, 6.5, n, fill=True, align='C')
-        pdf.set_font('sans', 'B', 9.5)
+        pdf.set_font('helvetica', 'B', 9.5)
         pdf.set_text_color(*DARK)
         pdf.set_x(28)
         pdf.cell(100, 6.5, t)
         if d:
-            pdf.set_font('sans', 'I', 7.5)
+            pdf.set_font('helvetica', 'I', 7.5)
             pdf.set_text_color(*MUTED)
             pdf.cell(60, 6.5, d, align='R')
         pdf.ln(9)
@@ -611,6 +603,18 @@ def build():
     sub3(pdf, 'Respuesta Exitosa (200):')
     codeblock(pdf, '{\n  "ok": true,\n  "data": {\n    "actualizadas": 2\n  },\n  "error": null\n}', 'JSON')
 
+    # EP 12a
+    sub(pdf, 'Endpoint 12a: GET /api/notificaciones/pendientes-hoy')
+    para(pdf, 'Obtiene TODAS las notificaciones de inicio de mes (solicitud_recarga_inicio_mes) creadas hoy en estado pendiente, para TODOS los usuarios. Disenado para consultar una sola vez al dia por un job automatico. Marca automaticamente todas como "enviada" en la misma consulta.')
+    sub3(pdf, 'Cuando usarlo:')
+    para(pdf, '- Una sola vez por dia (tipicamente a las 9:00 AM)\n- Para que un bot global o job automatico distribuya notificaciones de inicio mes\n- Para el cron job que ejecuta jobEvaluacionRecargas')
+    sub3(pdf, 'Request:')
+    codeblock(pdf, 'GET /api/notificaciones/pendientes-hoy\nx-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3', '')
+    sub3(pdf, 'Respuesta Exitosa (200):')
+    codeblock(pdf, '{\n  "ok": true,\n  "data": {\n    "total": 2,\n    "notificaciones": [\n      {\n        "id": "notif-001",\n        "tipo": "solicitud_recarga_inicio_mes",\n        "usuarios": { "nombre": "Laura", "telefono": "573046757626" },\n        "payload": { "mensaje": "Hola Laura Durán..." }\n      }\n    ]\n  },\n  "error": null\n}', 'JSON')
+    sub3(pdf, 'Comportamiento:')
+    para(pdf, '- Filtra SOLO tipo "solicitud_recarga_inicio_mes"\n- Solo devuelve notificaciones del dia actual\n- Marca TODAS como "enviada" automaticamente\n- Idempotente: 2da consulta mismo dia devuelve [] (vacio)\n- Si el job falla, notificaciones permanecen "pendiente" para reintentos')
+
     # ══════════════════════════════════════════
     # 8. PAGOS
     # ══════════════════════════════════════════
@@ -738,14 +742,14 @@ def build():
             pdf.add_page()
         pdf.set_fill_color(*PRIMARY)
         pdf.rect(15, pdf.get_y(), 180, 7.5, 'F')
-        pdf.set_font('sans', 'B', 8.5)
+        pdf.set_font('helvetica', 'B', 8.5)
         pdf.set_text_color(*WHITE)
         pdf.set_x(18)
         pdf.cell(110, 7.5, ph_title)
-        pdf.set_font('sans', 'I', 7.5)
+        pdf.set_font('helvetica', 'I', 7.5)
         pdf.cell(67, 7.5, actors, align='R')
         pdf.ln(9)
-        pdf.set_font('sans', '', 8)
+        pdf.set_font('helvetica', '', 8)
         pdf.set_text_color(*TEXT_CLR)
         for st in steps:
             if pdf.get_y() > 268:
@@ -827,25 +831,26 @@ def build():
     # ══════ FINAL ══════
     pdf.add_page()
     pdf.set_y(100)
-    pdf.set_font('sans', 'B', 20)
+    pdf.set_font('helvetica', 'B', 20)
     pdf.set_text_color(*PRIMARY)
     pdf.cell(0, 14, 'Fin del Documento', align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.set_draw_color(*ACCENT)
     pdf.set_line_width(1.5)
     pdf.line(75, pdf.get_y() + 4, 135, pdf.get_y() + 4)
     pdf.ln(12)
-    pdf.set_font('sans', '', 11)
+    pdf.set_font('helvetica', '', 11)
     pdf.set_text_color(*TEXT_CLR)
-    pdf.cell(0, 7, 'DeOne Backend API v2.0', align='C', new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 7, '17 Endpoints Bot | 2 Cron Jobs | 4 Modulos', align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, 'DeOne Backend API v2.1', align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, '18 Endpoints Bot | 2 Cron Jobs | 4 Modulos', align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
-    pdf.set_font('sans', 'I', 9)
+    pdf.set_font('helvetica', 'I', 9)
     pdf.set_text_color(*MUTED)
-    pdf.cell(0, 7, '12 de marzo de 2026', align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, '16 de marzo de 2026', align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 7, 'https://prueba-supabase.onrender.com/api', align='C', new_x="LMARGIN", new_y="NEXT")
 
-    # Guardar
-    out = '/Users/geinermartinezmoscoso/Desktop/prueba-supabase/docs/DeOne_API_Documentation.pdf'
+    # Guardar (ruta relativa)
+    out = os.path.join(os.path.dirname(__file__), 'docs', 'DeOne_API_Documentation.pdf')
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     pdf.output(out)
     print(f'\n  PDF generado: {out}')
     print(f'   Paginas: {pdf.page_no()}')
