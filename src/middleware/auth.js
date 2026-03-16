@@ -19,7 +19,12 @@ function authBot(req, res, next) {
     return res.status(err.statusCode).json(err.body);
   }
   
-  req.actorTipo = "bot";
+  // Determinar si es admin u bot basado en cuál key es válida
+  if (adminKey && adminKey === config.auth.adminApiKey) {
+    req.actorTipo = "admin";
+  } else {
+    req.actorTipo = "bot";
+  }
   next();
 }
 

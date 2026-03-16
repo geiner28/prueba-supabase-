@@ -36,4 +36,10 @@ const rechazarFacturaSchema = z.object({
   motivo_rechazo: z.string().min(1, "Motivo de rechazo requerido"),
 });
 
-module.exports = { capturaFacturaSchema, validarFacturaSchema, rechazarFacturaSchema };
+// Actualizar monto de factura (aproximar heredada)
+const actualizarMontoFacturaSchema = z.object({
+  monto: z.number().positive("Monto debe ser positivo"),
+  observaciones_admin: z.string().optional(),
+});
+
+module.exports = { capturaFacturaSchema, validarFacturaSchema, rechazarFacturaSchema, actualizarMontoFacturaSchema };

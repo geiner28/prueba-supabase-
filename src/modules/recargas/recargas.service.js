@@ -23,8 +23,11 @@ try {
 /**
  * Reportar recarga (desde el bot).
  */
-async function reportarRecarga(body) {
+async function reportarRecarga(body, actorTipo = "bot") {
   const { telefono, periodo, monto, comprobante_url, referencia_tx } = body;
+  
+  // Determinar canal de origen basado en quién hace la petición
+  const canalOrigen = actorTipo === "admin" ? "web_admin" : "whatsapp";
 
   // 1. Resolver usuario
   const usuario = await resolverUsuarioPorTelefono(telefono);
@@ -58,7 +61,7 @@ async function reportarRecarga(body) {
       periodo: periodoNorm,
       monto,
       estado: "en_validacion",
-      canal_origen: "whatsapp",
+      canal_origen: canalOrigen,
       comprobante_url,
       referencia_tx: referencia_tx || null,
     })
@@ -284,6 +287,53 @@ async function aprobarRecarga(recargaId, body, adminId) {
 }
 
 /**
+ * Obtener recargas pendientes de validación para un usuario (por teléfono).
+ */
+async function obtenerRecargasPendientesPorTelefono(telefono) {
+  // 1. Resolver usuario
+  const usuarioResuelto = await resolverUsuarioPorTelefono(telefono);
+  if (!usuarioResuelto) return errors.notFound("Usuario no encontrado con ese teléfono");
+
+  const usuario = usuarioResuelto.usuario; // Acceder al objeto usuario completo
+
+  // 2. Obtener recargas pendientes del usuario (en_validacion)
+  const { data: recargas, error: recargasErr } = await supabase
+    .from("recargas")
+    .select("*")
+    .eq("usuario_id", usuarioResuelto.usuario_id)
+    .eq("estado", "en_validacion")
+    .order("creado_en", { ascending: false });
+
+  if (recargasErr) throw new Error(`Error obteniendo recargas: ${recargasErr.message}`);
+
+  // Si no hay recargas pendientes, retornar respuesta diferente
+  if (!recargas || recargas.length === 0) {
+    return success({
+      usuario: {
+        usuario_id: usuarioResuelto.usuario_id,
+        nombre: usuario.nombre,
+        apellido: usuario.apellido,
+        telefono: usuario.telefono,
+        plan: usuario.plan,
+      },
+      recargas_pendientes: [],
+      no_pending: true, // Indicador para diferenciar "usuario sin recargas" de "usuario no encontrado"
+    });
+  }
+
+  return success({
+    usuario: {
+      usuario_id: usuarioResuelto.usuario_id,
+      nombre: usuario.nombre,
+      apellido: usuario.apellido,
+      telefono: usuario.telefono,
+      plan: usuario.plan,
+    },
+    recargas_pendientes: recargas || [],
+  });
+}
+
+/**
  * Admin rechaza una recarga.
  */
 async function rechazarRecarga(recargaId, body, adminId) {
@@ -353,4 +403,4 @@ async function rechazarRecarga(recargaId, body, adminId) {
   return success(updated);
 }
 
-module.exports = { reportarRecarga, aprobarRecarga, rechazarRecarga };
+module.exports = { reportarRecarga, aprobarRecarga, rechazarRecarga, obtenerRecargasPendientesPorTelefono };

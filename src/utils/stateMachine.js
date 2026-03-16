@@ -13,7 +13,7 @@ const transitions = {
   },
   facturas: {
     capturada: ["extraida", "en_revision"],
-    extraida: ["en_revision", "validada"],
+    extraida: ["en_revision", "validada", "rechazada"],
     en_revision: ["validada", "rechazada"],
     validada: ["pagada"],
   },
