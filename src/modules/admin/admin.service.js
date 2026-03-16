@@ -6,6 +6,10 @@ const supabase = require("../../config/supabase");
 const { success, errors } = require("../../utils/response");
 const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
+const {
+  distribuirFacturasEnCuotas,
+  adaptarCuotasAProgamacion,
+} = require("../../utils/cuotasDistribucion");
 
 /**
  * Listar todos los clientes con paginación y búsqueda.
@@ -121,40 +125,190 @@ async function listarClientes({ page, limit, search, plan, activo }) {
 /**
  * Obtener perfil completo de un cliente con sus obligaciones, recargas y saldos.
  */
-async function perfilCompletoCliente(telefono) {
+async function perfilCompletoCliente(telefono, periodo = null) {
   const usuario = await resolverUsuarioPorTelefono(telefono);
   if (!usuario) return errors.notFound("Usuario no encontrado con ese teléfono");
 
   const userId = usuario.usuario_id;
 
+  // Determinar periodo: si no se proporciona, usar mes actual
+  let periodoTarget = periodo;
+  if (!periodoTarget) {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    periodoTarget = `${year}-${month}-01`;
+  } else {
+    periodoTarget = normalizarPeriodo(periodoTarget);
+  }
+
   // Obtener datos en paralelo
   const [
     { data: userData },
-    { data: obligaciones },
-    { data: recargas },
-    { data: pagos },
+    { data: obligacionesTotal },
+    { data: obligacionesMes },
+    { data: recargasTotal },
+    { data: recargasMes },
+    { data: pagosTotal },
+    { data: pagosMes },
     { data: notificaciones },
+    { data: programacionRecargasData },
   ] = await Promise.all([
     supabase.from("usuarios").select("*, ajustes_usuario(*)").eq("id", userId).single(),
+    // Obligaciones totales (para resumen global)
     supabase.from("obligaciones").select("*, facturas(*)").eq("usuario_id", userId).order("creado_en", { ascending: false }),
+    // Obligaciones del mes
+    supabase.from("obligaciones").select("*, facturas(*)").eq("usuario_id", userId).eq("periodo", periodoTarget).order("creado_en", { ascending: false }),
+    // Recargas totales (para filtar después)
     supabase.from("recargas").select("*").eq("usuario_id", userId).order("creado_en", { ascending: false }),
+    // Recargas aprobadas del mes específico
+    supabase.from("recargas").select("*").eq("usuario_id", userId).eq("periodo", periodoTarget).eq("estado", "aprobada"),
+    // Pagos totales (para filtrar después)
     supabase.from("pagos").select("*, facturas(servicio, monto, periodo)").eq("usuario_id", userId).order("creado_en", { ascending: false }),
+    // Pagos pagados del mes - IMPORTANTE: join con facturas para poder filtrar por periodo
+    supabase.from("pagos").select("*, facturas(periodo)").eq("usuario_id", userId).eq("estado", "pagado"),
+    // Notificaciones recientes
     supabase.from("notificaciones").select("*").eq("usuario_id", userId).order("creado_en", { ascending: false }).limit(20),
+    // Programación de recargas del usuario
+    supabase.from("programacion_recargas").select("*").eq("usuario_id", userId).single(),
   ]);
 
-  // Calcular totales
-  const totalRecargasAprobadas = (recargas || [])
+  // Normalizar programacionRecargas - puede ser un objeto o null
+  let programacionRecargas = programacionRecargasData;
+
+  // ═══════════════════════════════════════════════════════════════
+  // CÁLCULOS GLOBALES (sin filtro de periodo)
+  // ═══════════════════════════════════════════════════════════════
+  const totalRecargasAprobadas = (recargasTotal || [])
     .filter(r => r.estado === "aprobada")
     .reduce((sum, r) => sum + Number(r.monto), 0);
 
-  const totalPagosPagados = (pagos || [])
+  const totalPagosPagados = (pagosTotal || [])
     .filter(p => p.estado === "pagado")
     .reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
 
   const saldoDisponible = totalRecargasAprobadas - totalPagosPagados;
 
-  // Calcular progreso de obligaciones
-  const obligacionesConProgreso = (obligaciones || []).map(obl => {
+  // ═══════════════════════════════════════════════════════════════
+  // CÁLCULOS POR MES
+  // ═══════════════════════════════════════════════════════════════
+  
+  // Total recargas aprobadas del mes
+  const totalRecargasAprobadasMes = (recargasMes || [])
+    .reduce((sum, r) => sum + Number(r.monto), 0);
+
+  // Total pagos del mes (filtrado por periodo de las facturas)
+  const totalPagosRealizadosMes = (pagosMes || [])
+    .filter(p => p.facturas && p.facturas.periodo === periodoTarget)
+    .reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
+
+  // Facturas del mes que son validadas (TODO excepto extraida y rechazada)
+  const allFacturasMes = (obligacionesMes || []).reduce((acc, obl) => {
+    return acc.concat(obl.facturas || []);
+  }, []);
+
+  const facturasValidadasMes = allFacturasMes.filter(
+    f => !["extraida", "rechazada"].includes(f.estado)
+  );
+
+  const facturasPendienteMes = allFacturasMes.filter(
+    f => !["extraida", "rechazada", "pagada"].includes(f.estado)
+  );
+
+  const totalPendienteMes = facturasPendienteMes.reduce(
+    (sum, f) => sum + Number(f.monto || 0), 0
+  );
+
+  // Cantidad de recargas aprobadas del mes
+  const recargasAprobadaCountMes = (recargasMes || []).length;
+
+  // ═══════════════════════════════════════════════════════════════
+  // CALCULAR CUOTAS DEL MES (debe hacerse ANTES de usarlas)
+  // ═══════════════════════════════════════════════════════════════
+  let cuotasDelMes = { grupo1: null, grupo2: null };
+  let cuotasCalculadas = { cuota1: { facturas: [] }, cuota2: { facturas: [] } }; // Para mapear grupos a facturas
+  try {
+    // Extraer facturas validadas del mes (para cálculo de cuotas monetarias)
+    const facturasValidadasDelMes = allFacturasMes.filter(
+      f => ["validada"].includes(f.estado)
+    );
+
+    if (facturasValidadasDelMes.length > 0) {
+      // Calcular cuotas según la lógica estándar (1-15, 16-31)
+      cuotasCalculadas = distribuirFacturasEnCuotas(facturasValidadasDelMes, periodoTarget);
+
+      // Adaptar cuotas a las preferencias del usuario (programacion_recargas)
+      cuotasDelMes = adaptarCuotasAProgamacion(
+        cuotasCalculadas,
+        programacionRecargas,
+        userData?.plan
+      );
+    } else {
+      // Si no hay facturas validadas, pero hay otras facturas, distribuirlas aun así para grupos
+      cuotasCalculadas = distribuirFacturasEnCuotas(allFacturasMes, periodoTarget);
+    }
+  } catch (err) {
+    console.error("[ADMIN] Error calculando cuotas:", err.message);
+    // Si hay error, retornar cuotas vacías pero sin fallar
+    cuotasDelMes = { grupo1: null, grupo2: null };
+    cuotasCalculadas = { cuota1: { facturas: [] }, cuota2: { facturas: [] } };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ASIGNAR GRUPO A CADA FACTURA EN obligaciones_mes
+  // ═══════════════════════════════════════════════════════════════
+  // Crear maps de IDs para búsqueda rápida
+  // LÓGICA SIMPLE: Si cantidad_recargas = 1 → TODAS las facturas van a grupo 1
+  //                Si cantidad_recargas = 2 → Usar distribución de cuotasCalculadas
+  let idsGrupo1, idsGrupo2;
+
+  const cantidadRecargas = programacionRecargas?.cantidad_recargas;
+  // Convertir a número si es string
+  const cantidadRecargasNum = Number(cantidadRecargas);
+  
+  if (cantidadRecargasNum === 1) {
+    // UNA SOLA RECARGA: TODAS las facturas van a grupo 1, sin excepciones
+    idsGrupo1 = new Set(allFacturasMes.map(f => f.id));
+    idsGrupo2 = new Set(); // Vacío
+  } else {
+    // DOS RECARGAS O DEFAULT: Usar la distribución calculada
+    idsGrupo1 = new Set((cuotasCalculadas.cuota1.facturas || []).map(f => f.id));
+    idsGrupo2 = new Set((cuotasCalculadas.cuota2.facturas || []).map(f => f.id));
+  }
+
+  // Calcular progreso de obligaciones del mes
+  const obligacionesDelMesConProgreso = (obligacionesMes || []).map(obl => {
+    const facturas = (obl.facturas || []).map(f => {
+      // Asignar grupo basado en cálculo previo
+      let grupo = null;
+      if (idsGrupo1.has(f.id)) grupo = 1;
+      else if (idsGrupo2.has(f.id)) grupo = 2;
+      
+      return {
+        ...f,
+        grupo, // Viene del cálculo de distribuirFacturasEnCuotas
+      };
+    });
+    
+    const totalFacturas = facturas.length;
+    const facturasPagadas = facturas.filter(f => f.estado === "pagada").length;
+    const montoTotal = facturas.reduce((sum, f) => sum + Number(f.monto || 0), 0);
+    const montoPagado = facturas.filter(f => f.estado === "pagada").reduce((sum, f) => sum + Number(f.monto || 0), 0);
+    const progreso = totalFacturas > 0 ? Math.round((facturasPagadas / totalFacturas) * 100) : 0;
+
+    return {
+      ...obl,
+      facturas, // Con grupo asignado
+      total_facturas: totalFacturas,
+      facturas_pagadas: facturasPagadas,
+      monto_total: montoTotal,
+      monto_pagado: montoPagado,
+      progreso,
+    };
+  });
+
+  // Calcular progreso de obligaciones totales (para mantener compatibilidad)
+  const obligacionesTotalesConProgreso = (obligacionesTotal || []).map(obl => {
     const facturas = obl.facturas || [];
     const totalFacturas = facturas.length;
     const facturasPagadas = facturas.filter(f => f.estado === "pagada").length;
@@ -174,18 +328,30 @@ async function perfilCompletoCliente(telefono) {
 
   return success({
     usuario: userData,
+    periodo: periodoTarget,
     resumen: {
-      total_obligaciones: (obligaciones || []).length,
-      obligaciones_activas: (obligaciones || []).filter(o => ["activa", "en_progreso"].includes(o.estado)).length,
-      obligaciones_completadas: (obligaciones || []).filter(o => o.estado === "completada").length,
+      // Datos globales (sin filtro de mes)
+      total_obligaciones: (obligacionesTotal || []).length,
+      obligaciones_activas: (obligacionesTotal || []).filter(o => ["activa", "en_progreso"].includes(o.estado)).length,
+      obligaciones_completadas: (obligacionesTotal || []).filter(o => o.estado === "completada").length,
       total_recargas_aprobadas: totalRecargasAprobadas,
       total_pagos_realizados: totalPagosPagados,
       saldo_disponible: saldoDisponible,
+      // Datos filtrados por mes
+      total_recargas_aprobadas_mes: totalRecargasAprobadasMes,
+      total_pagos_realizados_mes: totalPagosRealizadosMes,
+      total_pendiente_mes: totalPendienteMes,
+      facturas_validadas_count_mes: facturasValidadasMes.length,
+      recargas_aprobadas_count_mes: recargasAprobadaCountMes,
     },
-    obligaciones: obligacionesConProgreso,
-    recargas,
-    pagos,
+    obligaciones: obligacionesTotalesConProgreso,
+    obligaciones_mes: obligacionesDelMesConProgreso,
+    recargas: recargasTotal,
+    pagos: pagosTotal,
     notificaciones_recientes: notificaciones,
+    programacion_recargas: programacionRecargas,
+    cuotas_mes: cuotasDelMes,
+    cuotasCalculadas: cuotasCalculadas,  // Para que el frontend pueda calcular grupos si es necesario
   });
 }
 

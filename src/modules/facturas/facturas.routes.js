@@ -4,7 +4,7 @@
 const { Router } = require("express");
 const { authBot, authAdmin, authBotOrAdmin } = require("../../middleware/auth");
 const { validateBody } = require("../../middleware/validate");
-const { capturaFacturaSchema, validarFacturaSchema, rechazarFacturaSchema } = require("./facturas.schema");
+const { capturaFacturaSchema, validarFacturaSchema, rechazarFacturaSchema, actualizarMontoFacturaSchema } = require("./facturas.schema");
 const service = require("./facturas.service");
 
 const router = Router();
@@ -43,6 +43,16 @@ router.put("/:id/validar", authAdmin, validateBody(validarFacturaSchema), async 
 router.put("/:id/rechazar", authAdmin, validateBody(rechazarFacturaSchema), async (req, res, next) => {
   try {
     const result = await service.rechazarFactura(req.params.id, req.validatedBody, req.adminId);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/facturas/:id/aproximar — Usuario aproxima monto de factura heredada
+router.put("/:id/aproximar", authBotOrAdmin, validateBody(actualizarMontoFacturaSchema), async (req, res, next) => {
+  try {
+    const result = await service.actualizarMontoFactura(req.params.id, req.validatedBody);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);

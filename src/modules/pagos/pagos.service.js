@@ -37,23 +37,25 @@ async function crearPago(body, actorTipo = "sistema", actorId = null) {
     );
   }
 
-  // Calcular disponible del periodo
+  // Calcular disponible GLOBAL (igual al Perfil)
+  // Pero necesitamos periodoNorm para asociar la recarga del mismo período
   const periodoNorm = normalizarPeriodo(factura.periodo);
 
   const { data: recargas } = await supabase
     .from("recargas")
     .select("monto")
     .eq("usuario_id", usuario.usuario_id)
-    .eq("periodo", periodoNorm)
     .eq("estado", "aprobada");
+    // ✅ SIN filtro de período - TODAS las recargas aprobadas
 
   const totalRecargas = (recargas || []).reduce((sum, r) => sum + Number(r.monto), 0);
 
+  // ✅ SOLO pagos confirmados ("pagado"), no incluir "en_proceso"
   const { data: pagosExistentes } = await supabase
     .from("pagos")
     .select("monto_aplicado")
     .eq("usuario_id", usuario.usuario_id)
-    .in("estado", ["en_proceso", "pagado"]);
+    .eq("estado", "pagado");
 
   const totalPagos = (pagosExistentes || []).reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
   const disponible = totalRecargas - totalPagos;
@@ -296,10 +298,10 @@ async function crearObligacionSiguienteMes(obligacionCompletada) {
     }
 
     // Copiar las facturas de la obligación completada al nuevo periodo
-    // (mismo servicio, mismo monto, pero para el nuevo periodo)
+    // Incluye más campos: etiqueta, archivo_url, tipo_referencia
     const { data: facturasAntiguas } = await supabase
       .from("facturas")
-      .select("servicio, monto, origen")
+      .select("servicio, monto, origen, etiqueta, archivo_url, tipo_referencia")
       .eq("obligacion_id", obligacionCompletada.id)
       .not("estado", "eq", "rechazada");
 
@@ -311,8 +313,11 @@ async function crearObligacionSiguienteMes(obligacionCompletada) {
         periodo: nuevoPeriodo,
         monto: f.monto,
         estado: "extraida",
-        origen: f.origen || "auto",
+        origen: "auto",  // ✅ Explícitamente "auto" para heredadas
         extraccion_estado: "ok",
+        etiqueta: f.etiqueta || null,
+        archivo_url: f.archivo_url || null,
+        tipo_referencia: f.tipo_referencia || null,
       }));
 
       const { error: insertErr } = await supabase

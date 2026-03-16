@@ -69,7 +69,7 @@ async function generarSolicitudes(body) {
     .from("facturas")
     .select("id, servicio, monto, fecha_vencimiento, estado, creado_en")
     .eq("obligacion_id", obligacion_id)
-    .in("estado", ["validada", "extraida"])
+    .in("estado", ["validada"])
     .order("fecha_vencimiento", { ascending: true });
 
   if (factErr) throw new Error(`Error obteniendo facturas: ${factErr.message}`);
@@ -599,12 +599,12 @@ async function recalcularSolicitudesPorObligacion(obligacionId) {
     return null;
   }
 
-  // 2. Obtener facturas validadas/extraídas de la obligación
+  // 2. Obtener facturas validadas de la obligación
   const { data: facturas, error: factErr } = await supabase
     .from("facturas")
     .select("id, servicio, monto, fecha_vencimiento, estado, creado_en")
     .eq("obligacion_id", obligacionId)
-    .in("estado", ["validada", "extraida"]);
+    .in("estado", ["validada"]);
 
   if (factErr) {
     console.error("[SOLICITUDES_RECARGA] Error obteniendo facturas:", factErr.message);
@@ -799,14 +799,14 @@ async function obtenerObligacionConUsuario(obligacionId) {
 }
 
 /**
- * Obtiene facturas validadas/extraídas de una obligación
+ * Obtiene facturas validadas de una obligación
  */
 async function obtenerFacturasValidadas(obligacionId) {
   const { data, error } = await supabase
     .from('facturas')
     .select('id, servicio, monto, fecha_vencimiento, creado_en, periodo')
     .eq('obligacion_id', obligacionId)
-    .in('estado', ['validada', 'extraida']);
+    .in('estado', ['validada']);
   
   if (error) throw new Error(`Error obteniendo facturas: ${error.message}`);
   return data || [];

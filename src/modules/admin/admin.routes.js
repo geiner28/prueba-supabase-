@@ -35,10 +35,11 @@ router.get("/clientes", authAdmin, validateQuery(queryClientesSchema), async (re
   }
 });
 
-// GET /api/admin/clientes/:telefono — Perfil completo de un cliente
+// GET /api/admin/clientes/:telefono — Perfil completo de un cliente (opcional: filtrar por ?periodo=YYYY-MM-DD)
 router.get("/clientes/:telefono", authAdmin, async (req, res, next) => {
   try {
-    const result = await service.perfilCompletoCliente(req.params.telefono);
+    const { periodo } = req.query;
+    const result = await service.perfilCompletoCliente(req.params.telefono, periodo);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);

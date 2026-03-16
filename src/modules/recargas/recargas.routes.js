@@ -12,7 +12,21 @@ const router = Router();
 // POST /api/recargas/reportar
 router.post("/reportar", authBot, validateBody(reportarRecargaSchema), async (req, res, next) => {
   try {
-    const result = await service.reportarRecarga(req.validatedBody);
+    const result = await service.reportarRecarga(req.validatedBody, req.actorTipo);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/recargas/pendientes?telefono=XXXX
+router.get("/pendientes", authAdmin, async (req, res, next) => {
+  try {
+    const { telefono } = req.query;
+    if (!telefono) {
+      return res.status(400).json({ status: "error", message: "Parámetro 'telefono' es requerido" });
+    }
+    const result = await service.obtenerRecargasPendientesPorTelefono(telefono);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);

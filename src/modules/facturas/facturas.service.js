@@ -322,10 +322,64 @@ async function actualizarContadoresObligacion(obligacionId) {
     .eq("id", obligacionId);
 }
 
+/**
+ * Actualizar solo el monto de una factura HEREDADA (aproximar).
+ * NO cambia el estado, solo ajusta el monto.
+ */
+async function actualizarMontoFactura(facturaId, body) {
+  const { monto, observaciones_admin } = body;
+
+  const { data: factura, error: findErr } = await supabase
+    .from("facturas")
+    .select("*")
+    .eq("id", facturaId)
+    .single();
+
+  if (findErr || !factura) return errors.notFound("Factura no encontrada");
+
+  // Solo permitir aproximación en heredadas no validadas
+  if (factura.origen !== "auto" || factura.estado !== "extraida") {
+    return errors.invalidTransition(
+      `Solo puedes aproximar facturas heredadas en estado 'extraida'. Esta factura está en estado '${factura.estado}' con origen '${factura.origen}'.`
+    );
+  }
+
+  const antes = { ...factura };
+  const { data: updated, error: updateErr } = await supabase
+    .from("facturas")
+    .update({
+      monto,
+      observaciones_admin: observaciones_admin || null,
+    })
+    .eq("id", facturaId)
+    .select()
+    .single();
+
+  if (updateErr) throw new Error(`Error actualizando monto: ${updateErr.message}`);
+
+  await registrarAuditLog({
+    actor_tipo: "usuario",
+    accion: "aproximar_factura",
+    entidad: "facturas",
+    entidad_id: facturaId,
+    antes,
+    despues: updated,
+  });
+
+  return success({
+    factura_id: facturaId,
+    servicio: updated.servicio,
+    monto_anterior: factura.monto,
+    monto_nuevo: updated.monto,
+    estado: "extraida",
+  });
+}
+
 module.exports = {
   capturaFactura,
   validarFactura,
   rechazarFactura,
+  actualizarMontoFactura,
   listarFacturasPorObligacion,
   actualizarContadoresObligacion,
 };
