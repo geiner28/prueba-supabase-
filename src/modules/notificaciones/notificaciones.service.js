@@ -392,44 +392,68 @@ Ya registré tu recarga. Tu saldo disponible en deOne es de $ ${fmtSaldo(saldo)}
 
 /**
  * Prepara datos completos para notificación de recarga
+ * MODIFICADO: Ahora acepta usuario_id y periodo en lugar de obligacionId
+ * para obtener TODAS las obligaciones del usuario en ese periodo
  */
-async function prepararDatosNotificacion(obligacionId, esPrimeraRecarga) {
+async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
   // Importar funciones del módulo de solicitudes
   const solicitudesModule = require('../solicitudes-recarga/solicitudes-recarga.service');
   
-  // Obtener obligación con usuario
-  const obligacion = await solicitudesModule.obtenerObligacionConUsuario(obligacionId);
-  if (!obligacion) return null;
+  // Obtener datos del usuario
+  const { data: usuario } = await supabase
+    .from('usuarios')
+    .select('nombre')
+    .eq('id', usuarioId)
+    .single();
   
-  // Obtener facturas
-  const facturas = await solicitudesModule.obtenerFacturasValidadas(obligacionId);
+  if (!usuario) return null;
   
-  // Calcular totales
-  const total_obligaciones = facturas.reduce((sum, f) => sum + Number(f.monto || 0), 0);
-  const saldo_actual = await solicitudesModule.calcularSaldoUsuario(obligacion.usuario_id, obligacion.periodo);
+  // PASO 1: Obtener TODAS las obligaciones del usuario para este periodo
+  const { data: obligacionesDelMes } = await supabase
+    .from('obligaciones')
+    .select('id')
+    .eq('usuario_id', usuarioId)
+    .eq('periodo', periodo);
+  
+  if (!obligacionesDelMes || obligacionesDelMes.length === 0) {
+    console.log(`[NOTIFICACIONES] No hay obligaciones para usuario ${usuarioId} en periodo ${periodo}`);
+    return null;
+  }
+  
+  const obligacionIds = obligacionesDelMes.map(o => o.id);
+  
+  // PASO 2: Obtener TODAS las facturas de TODAS las obligaciones
+  const { data: facturasDelMes } = await supabase
+    .from('facturas')
+    .select('id, servicio, monto, estado')
+    .in('obligacion_id', obligacionIds)
+    .eq('estado', 'validada')
+    .order('servicio', { ascending: true });
+  
+  if (!facturasDelMes || facturasDelMes.length === 0) {
+    console.log(`[NOTIFICACIONES] No hay facturas validadas para usuario ${usuarioId} en periodo ${periodo}`);
+    return null;
+  }
+  
+  // PASO 3: Calcular totales acumulados de TODAS las facturas
+  const total_obligaciones = facturasDelMes.reduce((sum, f) => sum + Number(f.monto || 0), 0);
+  const saldo_actual = await solicitudesModule.calcularSaldoUsuario(usuarioId, periodo);
   const valor_a_recargar = Math.max(0, total_obligaciones - saldo_actual);
   
   // Obtener nombre del mes actual y anterior
   const mesActual = getNombreMesActual();
   const mesAnterior = getNombreMesAnterior();
   
-  // Obtener datos del usuario para nombre
-  const { data: usuario } = await supabase
-    .from('usuarios')
-    .select('nombre')
-    .eq('id', obligacion.usuario_id)
-    .single();
-  
-// Obtener total del mes anterior (pagos realizados SOLO del mes anterior)
+  // Obtener total del mes anterior (pagos realizados SOLO del mes anterior)
   // Calcular período anterior dinámicamente
-  const fechaActual = new Date(obligacion.periodo);
+  const fechaActual = new Date(periodo);
   fechaActual.setMonth(fechaActual.getMonth() - 1);
   const periodoAnterior = fechaActual.toISOString().split('T')[0];
   
   const { data: pagosMesAnterior } = await supabase
     .from('pagos')
     .select('monto_aplicado, facturas(periodo)')
-    .eq('usuario_id', obligacion.usuario_id)
+    .eq('usuario_id', usuarioId)
     .eq('estado', 'pagado');
 
   const totalMesAnterior = (pagosMesAnterior || []).reduce((sum, p) => {
@@ -441,20 +465,30 @@ async function prepararDatosNotificacion(obligacionId, esPrimeraRecarga) {
     return sum;
   }, 0);
   
-  // Preparar obligaciones con etiqueta
-  const obligaciones = facturas.map(f => ({
-    etiqueta: f.servicio || 'Servicio',
-    monto: Number(f.monto || 0)
+  // PASO 4: Preparar obligaciones con etiqueta (agrupadas por servicio)
+  // Agrupar facturas por servicio para mostrar lista única
+  const obligacionesPorServicio = {};
+  for (const factura of facturasDelMes) {
+    const servicio = factura.servicio || 'Servicio';
+    if (!obligacionesPorServicio[servicio]) {
+      obligacionesPorServicio[servicio] = 0;
+    }
+    obligacionesPorServicio[servicio] += Number(factura.monto || 0);
+  }
+  
+  // Convertir a array de obligaciones
+  const obligaciones = Object.keys(obligacionesPorServicio).map(servicio => ({
+    etiqueta: servicio,
+    monto: obligacionesPorServicio[servicio]
   }));
   
   return {
-    obligacion_id: obligacionId,
-    usuario_id: obligacion.usuario_id,
+    usuario_id: usuarioId,
     nombre_usuario: usuario?.nombre || 'Usuario',
-    periodo: obligacion.periodo,
+    periodo: periodo,
     es_primera_recarga: esPrimeraRecarga,
-    obligaciones: obligaciones,
-    total_obligaciones: total_obligaciones,
+    obligaciones: obligaciones,  // TODAS las obligaciones del mes
+    total_obligaciones: total_obligaciones,  // TOTAL CORRECTO
     saldo_actual: saldo_actual,
     valor_a_recargar: valor_a_recargar,
     mes_actual: mesActual,
@@ -487,7 +521,6 @@ async function crearNotificacionRecarga(usuarioId, tipo, datos) {
     saldo_actual: datos.saldo_actual || 0,
     valor_a_recargar: datos.valor_a_recargar || 0,
     es_primera_recarga: datos.es_primera_recarga || false,
-    obligacion_id: datos.obligacion_id,
     periodo: datos.periodo,
     mensaje: ''
   };
