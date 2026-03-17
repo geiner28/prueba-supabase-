@@ -165,4 +165,64 @@ router.get("/notificaciones/mock/generar", authAdmin, async (req, res, next) => 
   }
 });
 
+// GET /api/admin/notificaciones/alertas — Listar SOLO alertas
+router.get("/notificaciones/alertas", authAdmin, async (req, res, next) => {
+  try {
+    const filters = {
+      desde: req.query.desde,
+      hasta: req.query.hasta,
+      page: parseInt(req.query.page) || 1,
+      limit: Math.min(parseInt(req.query.limit) || 20, 100),
+    };
+    const result = await service.listarAlertasAdmin(filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/notificaciones/automaticas — Listar SOLO notificaciones automáticas del bot
+router.get("/notificaciones/automaticas", authAdmin, async (req, res, next) => {
+  try {
+    const filters = {
+      desde: req.query.desde,
+      hasta: req.query.hasta,
+      page: parseInt(req.query.page) || 1,
+      limit: Math.min(parseInt(req.query.limit) || 20, 100),
+    };
+    const result = await service.listarNotificacionesAutomaticas(filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/notificaciones/:alerta_id/solicitud-original — Obtener solicitud que generó una alerta
+router.get("/notificaciones/:alerta_id/solicitud-original", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.obtenerSolicitudOriginal(req.params.alerta_id);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/notificaciones/acciones
+router.get("/notificaciones/acciones", authAdmin, async (req, res, next) => {
+  try {
+    const { usuario_id, tipo, estado, page, limit } = req.query;
+    const filters = {
+      usuario_id: usuario_id || undefined,
+      tipo: tipo || undefined,
+      estado: estado || "pendiente",
+      page: page ? parseInt(page) : 1,
+      limit: limit ? parseInt(limit) : 20
+    };
+    const result = await service.obtenerNotificacionesAcciones(filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

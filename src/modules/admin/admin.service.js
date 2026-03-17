@@ -1077,6 +1077,242 @@ async function generarNotificacionesMock() {
   }
 }
 
+/**
+ * Listar SOLO alertas del admin (notificaciones con tipo: 'alerta_admin')
+ * Parámetros:
+ *   - desde/hasta: filtro por fecha
+ *   - page/limit: paginación
+ */
+async function listarAlertasAdmin(filters = {}) {
+  const { desde, hasta, page = 1, limit = 20 } = filters;
+  const offset = (page - 1) * limit;
+
+  let query = supabase
+    .from("notificaciones")
+    .select("*", { count: "exact" })
+    .eq("tipo", "alerta_admin")
+    .order("creado_en", { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  // Filtro por rango de fechas
+  if (desde) {
+    query = query.gte("creado_en", `${desde}T00:00:00Z`);
+  }
+  if (hasta) {
+    query = query.lte("creado_en", `${hasta}T23:59:59Z`);
+  }
+
+  const { data, error, count } = await query;
+  if (error) throw new Error(`Error listando alertas: ${error.message}`);
+
+  return success({
+    alertas: data || [],
+    total: count || 0,
+    page,
+    limit,
+    total_pages: Math.ceil((count || 0) / limit),
+  });
+}
+
+/**
+ * Obtener la solicitud de recarga original que generó una alerta
+ * Parámetros:
+ *   - alerta_id: ID de la alerta
+ */
+async function obtenerSolicitudOriginal(alerta_id) {
+  // 1. Obtener la alerta
+  const { data: alerta, error: alertaError } = await supabase
+    .from("notificaciones")
+    .select("*")
+    .eq("id", alerta_id)
+    .eq("tipo", "alerta_admin")
+    .single();
+
+  if (alertaError || !alerta) {
+    return errors("Alerta no encontrada", 404);
+  }
+
+  // 2. Obtener ID de la notificación de cobro original desde el payload
+  const notificacion_cobro_id = alerta.payload?.notificacion_cobro_id;
+  
+  if (!notificacion_cobro_id) {
+    return errors("No hay solicitud original asociada", 400);
+  }
+
+  // 3. Buscar la notificación de solicitud de recarga original
+  const { data: solicitud, error: solicitudError } = await supabase
+    .from("notificaciones")
+    .select("*, usuarios(nombre, apellido, telefono)")
+    .eq("id", notificacion_cobro_id)
+    .in("tipo", ["solicitud_recarga", "solicitud_recarga_inicio_mes"])
+    .single();
+
+  if (solicitudError || !solicitud) {
+    return errors("Solicitud de recarga original no encontrada", 404);
+  }
+
+  return success({
+    alerta,
+    solicitud_original: solicitud,
+  });
+}
+
+/**
+ * Listar SOLO notificaciones automáticas del BOT
+ * (solicitud_recarga_inicio_mes, recordatorio_recarga, recarga_confirmada, etc.)
+ */
+async function listarNotificacionesAutomaticas(filters = {}) {
+  const { desde, hasta, page = 1, limit = 20 } = filters;
+  const offset = (page - 1) * limit;
+
+  let query = supabase
+    .from("notificaciones")
+    .select("*, usuarios(nombre, apellido, telefono)", { count: "exact" })
+    .in("tipo", [
+      "solicitud_recarga_inicio_mes",
+      "solicitud_recarga",
+      "recarga_confirmada",
+      "factura_validada",
+      "recordatorio_recarga"
+    ])
+    .order("creado_en", { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  // Filtro por rango de fechas
+  if (desde) {
+    query = query.gte("creado_en", `${desde}T00:00:00Z`);
+  }
+  if (hasta) {
+    query = query.lte("creado_en", `${hasta}T23:59:59Z`);
+  }
+
+  const { data, error, count } = await query;
+  if (error) throw new Error(`Error listando notificaciones automáticas: ${error.message}`);
+
+  return success({
+    notificaciones: data || [],
+    total: count || 0,
+    page,
+    limit,
+    total_pages: Math.ceil((count || 0) / limit),
+  });
+}
+
+/**
+ * Obtener acciones pendientes por usuario (revisiones agrupadas + contexto)
+ * Muestra facturas y recargas que esperan validación del admin
+ */
+async function obtenerNotificacionesAcciones(filters = {}) {
+  const { usuario_id, tipo, estado = "pendiente", page = 1, limit = 20 } = filters;
+
+  try {
+    // 1. Obtener revisiones pendientes con relaciones
+    let query = supabase
+      .from("revisiones_admin")
+      .select(`
+        id,
+        tipo,
+        estado,
+        usuario_id,
+        factura_id,
+        recarga_id,
+        prioridad,
+        razon,
+        creado_en,
+        usuarios(id, nombre, apellido, telefono),
+        facturas(id, servicio, monto, estado, periodo),
+        recargas(id, monto, periodo, estado, comprobante_url)
+      `)
+      .eq("estado", estado)
+      .order("prioridad", { ascending: true })
+      .order("creado_en", { ascending: false });
+
+    if (usuario_id) query = query.eq("usuario_id", usuario_id);
+    if (tipo) query = query.eq("tipo", tipo);
+
+    const { data: revisiones, error: revErr } = await query;
+
+    if (revErr) throw new Error(`Error obteniendo revisiones: ${revErr.message}`);
+
+    // 2. Procesar y agrupar por usuario
+    const accionesPorUsuario = {};
+
+    for (const rev of revisiones || []) {
+      if (!rev.usuario_id) continue;
+
+      const usuarioId = rev.usuario_id;
+      if (!accionesPorUsuario[usuarioId]) {
+        accionesPorUsuario[usuarioId] = {
+          usuario_id: usuarioId,
+          usuario: rev.usuarios,
+          acciones: [],
+          total: 0
+        };
+      }
+
+      // Preparar acción según tipo
+      let accion = {
+        revision_id: rev.id,
+        tipo: rev.tipo,
+        prioridad: rev.prioridad,
+        razon: rev.razon,
+        creado_en: rev.creado_en,
+        estado: rev.estado
+      };
+
+      if (rev.tipo === "factura" && rev.facturas) {
+        accion = {
+          ...accion,
+          factura_id: rev.facturas.id,
+          servicio: rev.facturas.servicio,
+          monto: rev.facturas.monto,
+          periodo: rev.facturas.periodo,
+          factura_estado: rev.facturas.estado,
+          display_label: `📄 ${rev.facturas.servicio} - $${Number(rev.facturas.monto || 0).toLocaleString()}`
+        };
+      } else if (rev.tipo === "recarga" && rev.recargas) {
+        accion = {
+          ...accion,
+          recarga_id: rev.recargas.id,
+          monto: rev.recargas.monto,
+          periodo: rev.recargas.periodo,
+          recarga_estado: rev.recargas.estado,
+          comprobante_url: rev.recargas.comprobante_url,
+          display_label: `💳 Recarga - $${Number(rev.recargas.monto || 0).toLocaleString()}`
+        };
+      }
+
+      accionesPorUsuario[usuarioId].acciones.push(accion);
+      accionesPorUsuario[usuarioId].total++;
+    }
+
+    // 3. Convertir a array y ordenar por último acontecimiento
+    const accionesArray = Object.values(accionesPorUsuario)
+      .sort((a, b) => {
+        const ultimoA = new Date(a.acciones[0]?.creado_en || 0).getTime();
+        const ultimoB = new Date(b.acciones[0]?.creado_en || 0).getTime();
+        return ultimoB - ultimoA;
+      });
+
+    // 4. Paginar
+    const totalUsuarios = accionesArray.length;
+    const paginadas = accionesArray.slice((page - 1) * limit, page * limit);
+
+    return success({
+      acciones_por_usuario: paginadas,
+      total_usuarios: totalUsuarios,
+      total_acciones: revisiones.length,
+      page,
+      limit,
+      total_pages: Math.ceil(totalUsuarios / limit)
+    });
+
+  } catch (err) {
+    console.error("Error en obtenerNotificacionesAcciones:", err.message);
+    return errors(err.message, 500);
+  }
+}
+
 module.exports = {
   listarClientes,
   perfilCompletoCliente,
@@ -1091,4 +1327,10 @@ module.exports = {
   marcarNotificacionEnviada,
   marcarNotificacionesEnviadasBatch,
   generarNotificacionesMock,
+  // Funciones para alertas y automáticas
+  listarAlertasAdmin,
+  obtenerSolicitudOriginal,
+  listarNotificacionesAutomaticas,
+  // Funciones para acciones
+  obtenerNotificacionesAcciones,
 };
