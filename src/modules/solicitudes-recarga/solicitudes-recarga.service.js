@@ -823,13 +823,13 @@ async function calcularSaldoUsuario(usuarioId, periodo) {
     return 0;
   }
   
-  // Obtener recargas aprobadas del periodo
+  // Obtener recargas aprobadas (TODAS históricamente, no filtradas por periodo)
+  // El saldo es acumulativo: si cargué en Febrero, está disponible en Marzo
   const { data: recargas, error: recErr } = await supabase
     .from('recargas')
     .select('monto')
     .eq('usuario_id', usuarioId)
-    .eq('estado', 'aprobada')
-    .eq('periodo', periodo);
+    .eq('estado', 'aprobada');
   
   if (recErr) throw new Error(`Error obteniendo recargas: ${recErr.message}`);
   

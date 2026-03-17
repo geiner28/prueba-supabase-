@@ -312,6 +312,7 @@ function generarMensajeInicioMes(datos) {
     mes_actual,
     obligaciones,
     total_obligaciones,
+    total_mes_anterior,
     saldo_actual,
     valor_a_recargar
   } = datos;
@@ -326,7 +327,7 @@ function generarMensajeInicioMes(datos) {
   const mensaje = `Hola ${nombre_usuario} ✌🏼
 Arrancamos mes!
 
-En ${mes_anterior} pagaste "$ ${fmtMonto(total_obligaciones)}" y tienes un saldo de "$ ${fmtMonto(saldo_actual)}"
+En ${mes_anterior} pagaste "$ ${fmtMonto(total_mes_anterior)}" y tienes un saldo de "$ ${fmtMonto(saldo_actual)}"
 
 Para ${mes_actual}, tus obligaciones suman "$ ${fmtMonto(total_obligaciones)}", así:
 
@@ -419,14 +420,26 @@ async function prepararDatosNotificacion(obligacionId, esPrimeraRecarga) {
     .eq('id', obligacion.usuario_id)
     .single();
   
-  // Obtener total del mes anterior (pagos realizados)
+// Obtener total del mes anterior (pagos realizados SOLO del mes anterior)
+  // Calcular período anterior dinámicamente
+  const fechaActual = new Date(obligacion.periodo);
+  fechaActual.setMonth(fechaActual.getMonth() - 1);
+  const periodoAnterior = fechaActual.toISOString().split('T')[0];
+  
   const { data: pagosMesAnterior } = await supabase
     .from('pagos')
-    .select('monto_aplicado')
+    .select('monto_aplicado, facturas(periodo)')
     .eq('usuario_id', obligacion.usuario_id)
     .eq('estado', 'pagado');
-  
-  const totalMesAnterior = (pagosMesAnterior || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
+
+  const totalMesAnterior = (pagosMesAnterior || []).reduce((sum, p) => {
+    const periodoFactura = p.facturas?.periodo;
+    // Solo contar pagos del período anterior
+    if (periodoFactura === periodoAnterior) {
+      return sum + Number(p.monto_aplicado || 0);
+    }
+    return sum;
+  }, 0);
   
   // Preparar obligaciones con etiqueta
   const obligaciones = facturas.map(f => ({
@@ -487,6 +500,7 @@ async function crearNotificacionRecarga(usuarioId, tipo, datos) {
       mes_actual: datos.mes_actual || getNombreMesActual(),
       obligaciones: datos.obligaciones || [],
       total_obligaciones: datos.total_obligaciones || 0,
+      total_mes_anterior: datos.total_mes_anterior || 0,
       saldo_actual: datos.saldo_actual || 0,
       valor_a_recargar: datos.valor_a_recargar || 0
     });
