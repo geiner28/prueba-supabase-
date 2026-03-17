@@ -76,4 +76,93 @@ router.post("/users/upsert", authAdmin, validateBody(upsertUsuarioAdminSchema), 
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// NOTIFICACIONES - ADMIN ENDPOINTS (Professional Panel)
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/notificaciones/list — Listar notificaciones con filtros avanzados
+router.get("/notificaciones/list", authAdmin, async (req, res, next) => {
+  try {
+    const filters = {
+      tipo: req.query.tipo,
+      estado: req.query.estado,
+      usuario_id: req.query.usuario_id,
+      periodo: req.query.periodo,
+      desde: req.query.desde,
+      hasta: req.query.hasta,
+      page: parseInt(req.query.page) || 1,
+      limit: Math.min(parseInt(req.query.limit) || 20, 100), // Max 100 per page
+    };
+    const result = await service.listarNotificacionesAdmin(filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/notificaciones/estadisticas — Obtener estadísticas de notificaciones
+router.get("/notificaciones/estadisticas", authAdmin, async (req, res, next) => {
+  try {
+    const filters = {
+      usuario_id: req.query.usuario_id,
+      periodo: req.query.periodo,
+      desde: req.query.desde,
+      hasta: req.query.hasta,
+    };
+    const result = await service.obtenerEstadisticasNotificaciones(filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/notificaciones/cliente/:usuario_id — Notificaciones de un cliente
+router.get("/notificaciones/cliente/:usuario_id", authAdmin, async (req, res, next) => {
+  try {
+    const filters = {
+      tipo: req.query.tipo,
+      periodo: req.query.periodo,
+    };
+    const result = await service.obtenerNotificacionesCliente(req.params.usuario_id, filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/notificaciones/:id/enviada — Marcar notificación como enviada
+router.put("/notificaciones/:id/enviada", authAdmin, async (req, res, next) => {
+  try {
+    // admin_id vendría del token, pero por ahora usamos null
+    const result = await service.marcarNotificacionEnviada(req.params.id, null);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/notificaciones/batch/enviadas — Marcar múltiples como enviadas
+router.post("/notificaciones/batch/enviadas", authAdmin, async (req, res, next) => {
+  try {
+    const { notificacion_ids } = req.body;
+    const result = await service.marcarNotificacionesEnviadasBatch(notificacion_ids, null);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/notificaciones/mock/generar — SOLO PARA TESTING: Generar notificaciones de prueba
+router.get("/notificaciones/mock/generar", authAdmin, async (req, res, next) => {
+  try {
+    // ⚠️ Este endpoint es solo para desarrollo/testing
+    console.warn('🔴 ENDPOINT DE MOCK LLAMADO - Generando datos de prueba');
+    
+    const result = await service.generarNotificacionesMock();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

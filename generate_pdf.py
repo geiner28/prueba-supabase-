@@ -605,15 +605,22 @@ def build():
 
     # EP 12a
     sub(pdf, 'Endpoint 12a: GET /api/notificaciones/pendientes-hoy')
-    para(pdf, 'Obtiene TODAS las notificaciones de inicio de mes (solicitud_recarga_inicio_mes) creadas hoy en estado pendiente, para TODOS los usuarios. Disenado para consultar una sola vez al dia por un job automatico. Marca automaticamente todas como "enviada" en la misma consulta.')
+    para(pdf, 'Endpoint estrategico para bot de distribucion. Devuelve TODAS las notificaciones de inicio de mes (solicitud_recarga_inicio_mes) creadas hoy en estado pendiente, para TODOS los usuarios. Marca automaticamente todas como "enviada" en la misma consulta. Disenado para consultar una sola vez al dia por un job automatico.')
     sub3(pdf, 'Cuando usarlo:')
-    para(pdf, '- Una sola vez por dia (tipicamente a las 9:00 AM)\n- Para que un bot global o job automatico distribuya notificaciones de inicio mes\n- Para el cron job que ejecuta jobEvaluacionRecargas')
+    para(pdf, '- Una sola vez por dia (tipicamente a las 9:00 AM)\n- Para que un bot global o job automatico distribuya notificaciones de inicio mes\n- Para el cron job que ejecuta jobEvaluacionRecargas\n- Consulta diaria unica para evitar duplicados')
     sub3(pdf, 'Request:')
-    codeblock(pdf, 'GET /api/notificaciones/pendientes-hoy\nx-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3', '')
-    sub3(pdf, 'Respuesta Exitosa (200):')
-    codeblock(pdf, '{\n  "ok": true,\n  "data": {\n    "total": 2,\n    "notificaciones": [\n      {\n        "id": "notif-001",\n        "tipo": "solicitud_recarga_inicio_mes",\n        "usuarios": { "nombre": "Laura", "telefono": "573046757626" },\n        "payload": { "mensaje": "Hola Laura Durán..." }\n      }\n    ]\n  },\n  "error": null\n}', 'JSON')
-    sub3(pdf, 'Comportamiento:')
-    para(pdf, '- Filtra SOLO tipo "solicitud_recarga_inicio_mes"\n- Solo devuelve notificaciones del dia actual\n- Marca TODAS como "enviada" automaticamente\n- Idempotente: 2da consulta mismo dia devuelve [] (vacio)\n- Si el job falla, notificaciones permanecen "pendiente" para reintentos')
+    codeblock(pdf, 'GET /api/notificaciones/pendientes-hoy\nHeaders:\n  x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3\n  (o x-admin-api-key trabajar tambien)', '')
+    sub3(pdf, 'Respuesta Exitosa (200) - Con notificaciones:')
+    codeblock(pdf, '{\n  "ok": true,\n  "data": {\n    "total": 2,\n    "notificaciones": [\n      {\n        "id": "e4c9a1f2-...",\n        "usuario_id": "user-001",\n        "tipo": "solicitud_recarga_inicio_mes",\n        "estado": "pendiente",\n        "usuarios": {\n          "nombre": "Laura",\n          "apellido": "Duran",\n          "telefono": "573046757626"\n        },\n        "payload": {\n          "tipo_mensaje": "inicio_mes",\n          "nombre_usuario": "Laura Duran",\n          "mes_actual": "Marzo 2026",\n          "mes_anterior": "Febrero 2026",\n          "obligaciones": [\n            {"etiqueta": "energia", "monto": 85000},\n            {"etiqueta": "gas", "monto": 50950}\n          ],\n          "total_obligaciones": 135950,\n          "saldo_actual": 0,\n          "valor_a_recargar": 135950,\n          "es_primera_recarga": true,\n          "obligacion_id": "obl-123",\n          "periodo": "2026-03-01",\n          "mensaje": "Hola Laura Duran xX\\nArrancamos mes!\\n\\nEn Febrero pagaste $ 0 y tienes un saldo de $ 0\\n\\nPara Marzo, tus obligaciones suman $ 135,950..."\n        },\n        "creado_en": "2026-03-16T09:00:15.000Z"\n      },\n      {\n        "id": "f5d1b2e3-...",\n        "usuario_id": "user-002",\n        "tipo": "solicitud_recarga_inicio_mes",\n        "estado": "pendiente",\n        "usuarios": {\n          "nombre": "Carlos",\n          "apellido": "Perez",\n          "telefono": "3001112233"\n        },\n        "payload": {"tipo_mensaje": "inicio_mes", "nombre_usuario": "Carlos Perez", ...}\n      }\n    ]\n  },\n  "error": null\n}', 'JSON')
+    sub3(pdf, 'Respuesta cuando NO hay notificaciones (200):')
+    codeblock(pdf, '{\n  "ok": true,\n  "data": {\n    "total": 0,\n    "notificaciones": []\n  },\n  "error": null\n}', 'JSON')
+    sub3(pdf, 'Errores posibles:')
+    table(pdf, ['Codigo', 'Mensaje'],
+          [['UNAUTHORIZED', 'API Key invalida o ausente'],
+           ['500', 'Error interno del servidor (si algo falla)']],
+          [45, 135])
+    sub3(pdf, 'Garantias de comportamiento:')
+    para(pdf, '- Filtra SOLO "solicitud_recarga_inicio_mes"\n- Solo notificaciones del dia actual en "pendiente"\n- Marca TODAS como "enviada" automaticamente\n- Idempotente: 2da consulta mismo dia devuelve [] (vacio)\n- Si job falla, notificaciones permanecen "pendiente"\n- Tiempo ~100-200ms para 2-50 usuarios/dia')
 
     # ══════════════════════════════════════════
     # 8. PAGOS

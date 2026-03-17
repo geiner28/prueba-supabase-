@@ -708,6 +708,375 @@ async function getUsuarioByTelefono(telefono) {
   });
 }
 
+// ===========================================
+// FUNCIONES PARA GESTIÓN DE NOTIFICACIONES (ADMIN-ONLY)
+// ===========================================
+
+/**
+ * Listar notificaciones con filtros avanzados
+ * Parámetros:
+ *   - tipo: tipo de notificación a filtrar (ej: 'solicitud_recarga_inicio_mes')
+ *   - estado: 'pendiente', 'enviada', 'leida'
+ *   - usuario_id: uuid del usuario
+ *   - periodo: 'YYYY-MM' para filtrar por mes
+ *   - desde: fecha inicio (YYYY-MM-DD)
+ *   - hasta: fecha fin (YYYY-MM-DD)
+ *   - page: número de página (default: 1)
+ *   - limit: registros por página (default: 20)
+ */
+async function listarNotificacionesAdmin(filters = {}) {
+  const { tipo, estado, usuario_id, periodo, desde, hasta, page = 1, limit = 20 } = filters;
+  const offset = (page - 1) * limit;
+
+  let query = supabase
+    .from("notificaciones")
+    .select("*, usuarios(nombre, apellido, telefono)", { count: "exact" })
+    .order("creado_en", { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  // Filtro por tipo
+  if (tipo) {
+    query = query.eq("tipo", tipo);
+  }
+
+  // Filtro por estado
+  if (estado) {
+    query = query.eq("estado", estado);
+  }
+
+  // Filtro por usuario
+  if (usuario_id) {
+    query = query.eq("usuario_id", usuario_id);
+  }
+
+  // Filtro por período (YYYY-MM)
+  if (periodo) {
+    const periodoStart = `${periodo}-01`;
+    const [year, month] = periodo.split("-");
+    const nextMonth = parseInt(month) + 1;
+    let periodoEnd;
+    if (nextMonth > 12) {
+      const nextYear = parseInt(year) + 1;
+      periodoEnd = `${nextYear}-01-01`;
+    } else {
+      periodoEnd = `${year}-${String(nextMonth).padStart(2, "0")}-01`;
+    }
+    query = query.gte("creado_en", periodoStart).lt("creado_en", periodoEnd);
+  }
+
+  // Filtro por rango de fechas
+  if (desde) {
+    query = query.gte("creado_en", `${desde}T00:00:00Z`);
+  }
+  if (hasta) {
+    query = query.lte("creado_en", `${hasta}T23:59:59Z`);
+  }
+
+  const { data, error, count } = await query;
+  if (error) throw new Error(`Error listando notificaciones: ${error.message}`);
+
+  return success({
+    notificaciones: data || [],
+    total: count || 0,
+    page,
+    limit,
+    total_pages: Math.ceil((count || 0) / limit),
+  });
+}
+
+/**
+ * Obtener estadísticas de notificaciones
+ * Parámetros:
+ *   - usuario_id: uuid del usuario (opcional, si se proporciona filtra solo de ese usuario)
+ *   - periodo: 'YYYY-MM' para filtrar por mes
+ */
+async function obtenerEstadisticasNotificaciones(filters = {}) {
+  const { usuario_id, periodo, desde, hasta } = filters;
+
+  // Construir query base con filtros
+  let buildQuery = () => {
+    let q = supabase.from("notificaciones").select("*", { count: "exact" });
+    if (usuario_id) q = q.eq("usuario_id", usuario_id);
+    if (periodo) {
+      const periodoStart = `${periodo}-01`;
+      const [year, month] = periodo.split("-");
+      const nextMonth = parseInt(month) + 1;
+      let periodoEnd;
+      if (nextMonth > 12) {
+        const nextYear = parseInt(year) + 1;
+        periodoEnd = `${nextYear}-01-01`;
+      } else {
+        periodoEnd = `${year}-${String(nextMonth).padStart(2, "0")}-01`;
+      }
+      q = q.gte("creado_en", periodoStart).lt("creado_en", periodoEnd);
+    }
+    if (desde) q = q.gte("creado_en", `${desde}T00:00:00Z`);
+    if (hasta) q = q.lte("creado_en", `${hasta}T23:59:59Z`);
+    return q;
+  };
+
+  // Obtener totales por estado - CADA UNO necesita su propia query
+  const { count: totalAll } = await buildQuery();
+  const { count: totalPendiente } = await buildQuery().eq("estado", "pendiente");
+  const { count: totalEnviada } = await buildQuery().eq("estado", "enviada");
+  const { count: totalLeida } = await buildQuery().eq("estado", "leida");
+
+  // Obtener TODAS las notificaciones para distribución por tipo
+  const { data: notificacionesTodas } = await buildQuery();
+  
+  const distribucionTipos = {};
+  (notificacionesTodas || []).forEach(notif => {
+    if (!distribucionTipos[notif.tipo]) {
+      distribucionTipos[notif.tipo] = { total: 0, pendiente: 0, enviada: 0, leida: 0 };
+    }
+    distribucionTipos[notif.tipo].total++;
+    if (notif.estado === "pendiente") distribucionTipos[notif.tipo].pendiente++;
+    else if (notif.estado === "enviada") distribucionTipos[notif.tipo].enviada++;
+    else if (notif.estado === "leida") distribucionTipos[notif.tipo].leida++;
+  });
+
+  return success({
+    estadisticas: {
+      total: totalAll || 0,
+      no_enviadas: totalPendiente || 0,
+      enviadas: totalEnviada || 0,
+      leidas: totalLeida || 0,
+      por_tipo: distribucionTipos,
+    },
+  });
+}
+
+/**
+ * Obtener notificaciones de un cliente específico
+ * Parámetros:
+ *   - usuario_id: uuid del usuario
+ *   - tipo: filtrar por tipo (opcional)
+ *   - periodo: filtrar por período YYYY-MM (opcional)
+ */
+async function obtenerNotificacionesCliente(usuario_id, filters = {}) {
+  const { tipo, periodo } = filters;
+
+  let query = supabase
+    .from("notificaciones")
+    .select("*")
+    .eq("usuario_id", usuario_id)
+    .order("creado_en", { ascending: false });
+
+  if (tipo) {
+    query = query.eq("tipo", tipo);
+  }
+
+  if (periodo) {
+    const periodoStart = `${periodo}-01`;
+    const [year, month] = periodo.split("-");
+    const nextMonth = parseInt(month) + 1;
+    let periodoEnd;
+    if (nextMonth > 12) {
+      const nextYear = parseInt(year) + 1;
+      periodoEnd = `${nextYear}-01-01`;
+    } else {
+      periodoEnd = `${year}-${String(nextMonth).padStart(2, "0")}-01`;
+    }
+    query = query.gte("creado_en", periodoStart).lt("creado_en", periodoEnd);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(`Error obteniendo notificaciones del cliente: ${error.message}`);
+
+  // Obtener datos del usuario
+  const { data: usuario } = await supabase
+    .from("usuarios")
+    .select("nombre, apellido, telefono")
+    .eq("id", usuario_id)
+    .single();
+
+  return success({
+    usuario: usuario,
+    notificaciones: data || [],
+    total: (data || []).length,
+  });
+}
+
+/**
+ * Marcar una notificación como enviada (manualmente por admin)
+ * Crea un registro de auditoría
+ */
+async function marcarNotificacionEnviada(notificacion_id, admin_id = null) {
+  // Obtener la notificación actual
+  const { data: notif, error: findErr } = await supabase
+    .from("notificaciones")
+    .select("*")
+    .eq("id", notificacion_id)
+    .single();
+
+  if (findErr || !notif) {
+    return errors.notFound("Notificación no encontrada");
+  }
+
+  // Actualizar estado a 'enviada'
+  const { data: updated, error: updateErr } = await supabase
+    .from("notificaciones")
+    .update({
+      estado: "enviada",
+      ultimo_error: null,
+    })
+    .eq("id", notificacion_id)
+    .select()
+    .single();
+
+  if (updateErr) throw new Error(`Error actualizando notificación: ${updateErr.message}`);
+
+  // Registrar en audit_log
+  try {
+    await supabase
+      .from("audit_log")
+      .insert({
+        actor_tipo: "admin",
+        actor_id: admin_id,
+        accion: "marcar_notificacion_enviada",
+        entidad: "notificaciones",
+        entidad_id: notificacion_id,
+        antes: { estado: notif.estado },
+        despues: { estado: "enviada" },
+      });
+  } catch (auditErr) {
+    console.error("[ADMIN] Error registrando en audit_log:", auditErr.message);
+    // No fallar la operación si falla el audit
+  }
+
+  return success(updated);
+}
+
+/**
+ * Marcar múltiples notificaciones como enviadas (batch)
+ */
+async function marcarNotificacionesEnviadasBatch(notificacion_ids = [], admin_id = null) {
+  if (!notificacion_ids || notificacion_ids.length === 0) {
+    return errors.badRequest("Se requiere un array de IDs de notificaciones");
+  }
+
+  const { data: updated, error: updateErr } = await supabase
+    .from("notificaciones")
+    .update({
+      estado: "enviada",
+      ultimo_error: null,
+    })
+    .in("id", notificacion_ids)
+    .select();
+
+  if (updateErr) throw new Error(`Error actualizando notificaciones: ${updateErr.message}`);
+
+  // Registrar en audit_log (una entrada por lote)
+  try {
+    await supabase
+      .from("audit_log")
+      .insert({
+        actor_tipo: "admin",
+        actor_id: admin_id,
+        accion: "marcar_notificaciones_enviadas_batch",
+        entidad: "notificaciones",
+        entidad_id: null,
+        antes: { cantidad: notificacion_ids.length },
+        despues: { cantidad: (updated || []).length, estado: "enviada" },
+      });
+  } catch (auditErr) {
+    console.error("[ADMIN] Error en audit_log batch:", auditErr.message);
+  }
+
+  return success({
+    actualizadas: (updated || []).length,
+    notificaciones: updated,
+  });
+}
+
+/**
+ * 🧪 SOLO PARA TESTING: Generar notificaciones de prueba
+ */
+async function generarNotificacionesMock() {
+  try {
+    console.warn('🧪 Generando notificaciones de prueba...');
+    
+    // Obtener algunos usuarios existentes
+    const { data: usuarios } = await supabase
+      .from("usuarios")
+      .select("id, nombre, apellido, telefono")
+      .limit(10);
+
+    if (!usuarios || usuarios.length === 0) {
+      return errors('No hay usuarios para crear notificaciones de prueba', 400);
+    }
+
+    const tiposNotificacion = [
+      'solicitud_recarga',
+      'recarga_confirmada',
+      'factura_vencida',
+      'pago_registrado',
+      'obligacion_activa',
+      'notificacion_especial',
+    ];
+
+    const estados = ['pendiente', 'enviada'];
+    const mockData = [];
+
+    // Generar 30 notificaciones de prueba
+    for (let i = 0; i < 30; i++) {
+      const usuario = usuarios[i % usuarios.length];
+      const tipo = tiposNotificacion[i % tiposNotificacion.length];
+      const estado = estados[Math.floor(Math.random() * estados.length)];
+      
+      // Crear mensaje según tipo
+      let mensajePayload = '';
+      switch (tipo) {
+        case 'solicitud_recarga':
+          mensajePayload = `Solicitud de recarga por $${(Math.random() * 100000).toFixed(0)} recibida`;
+          break;
+        case 'recarga_confirmada':
+          mensajePayload = `Tu recarga de $${(Math.random() * 100000).toFixed(0)} ha sido confirmada`;
+          break;
+        case 'factura_vencida':
+          mensajePayload = `Tienes una factura vencida desde hace ${Math.floor(Math.random() * 30)} días`;
+          break;
+        case 'pago_registrado':
+          mensajePayload = `Pago de $${(Math.random() * 100000).toFixed(0)} registrado correctamente`;
+          break;
+        case 'obligacion_activa':
+          mensajePayload = `Tienes una obligación activa de ${Math.floor(Math.random() * 12)} cuotas`;
+          break;
+        default:
+          mensajePayload = `Notificación especial para ${usuario.nombre}`;
+      }
+
+      mockData.push({
+        usuario_id: usuario.id,
+        tipo,
+        estado,
+        payload: { mensaje: mensajePayload },
+        creado_en: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+    }
+
+    // Insertar en la base de datos
+    const { data: insertados, error } = await supabase
+      .from("notificaciones")
+      .insert(mockData)
+      .select("*, usuarios(nombre, apellido, telefono)");
+
+    if (error) {
+      return errors(`Error insertando notificaciones mock: ${error.message}`, 500);
+    }
+
+    console.warn(`✅ ${insertados.length} notificaciones de prueba creadas`);
+
+    return success({
+      mensaje: `${insertados.length} notificaciones de prueba creadas exitosamente`,
+      notificaciones: insertados,
+    });
+  } catch (err) {
+    console.error('[ADMIN] Error generando mock:', err.message);
+    return errors(`Error: ${err.message}`, 500);
+  }
+}
+
 module.exports = {
   listarClientes,
   perfilCompletoCliente,
@@ -715,4 +1084,11 @@ module.exports = {
   dashboard,
   upsertUsuarioAdmin,
   getUsuarioByTelefono,
+  // Nuevas funciones para notificaciones
+  listarNotificacionesAdmin,
+  obtenerEstadisticasNotificaciones,
+  obtenerNotificacionesCliente,
+  marcarNotificacionEnviada,
+  marcarNotificacionesEnviadasBatch,
+  generarNotificacionesMock,
 };
