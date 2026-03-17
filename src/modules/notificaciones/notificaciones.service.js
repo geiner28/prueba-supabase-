@@ -465,21 +465,11 @@ async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
     return sum;
   }, 0);
   
-  // PASO 4: Preparar obligaciones con etiqueta (agrupadas por servicio)
-  // Agrupar facturas por servicio para mostrar lista única
-  const obligacionesPorServicio = {};
-  for (const factura of facturasDelMes) {
-    const servicio = factura.servicio || 'Servicio';
-    if (!obligacionesPorServicio[servicio]) {
-      obligacionesPorServicio[servicio] = 0;
-    }
-    obligacionesPorServicio[servicio] += Number(factura.monto || 0);
-  }
-  
-  // Convertir a array de obligaciones
-  const obligaciones = Object.keys(obligacionesPorServicio).map(servicio => ({
-    etiqueta: servicio,
-    monto: obligacionesPorServicio[servicio]
+  // PASO 4: Preparar obligaciones - cada factura es una línea individual (sin agrupar)
+  // Mostrar cada factura por separado, aunque sea del mismo servicio
+  const obligaciones = facturasDelMes.map(factura => ({
+    etiqueta: factura.servicio || 'Servicio',
+    monto: Number(factura.monto || 0)
   }));
   
   return {
