@@ -235,4 +235,25 @@ router.get("/notificaciones/acciones", authAdmin, async (req, res, next) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// FACTURAS - ADMIN ENDPOINTS (Invoice Panel)
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/facturas — Listar todas las facturas con información del usuario
+router.get("/facturas", authAdmin, async (req, res, next) => {
+  try {
+    const filters = {
+      estado: req.query.estado || undefined,
+      usuario_id: req.query.usuario_id || undefined,
+      periodo: req.query.periodo || undefined,
+      page: req.query.page ? parseInt(req.query.page) : 1,
+      limit: req.query.limit ? parseInt(req.query.limit) : 50
+    };
+    const result = await service.listarTodasLasFacturas(filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

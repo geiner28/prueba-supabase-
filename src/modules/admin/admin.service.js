@@ -1265,6 +1265,109 @@ async function listarNotificacionesAutomaticas(filters = {}) {
 }
 
 /**
+ * Listar todas las facturas con información del usuario
+ * Usado para el panel de facturas (Timeline + Tabla)
+ */
+async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, limit = 50 } = {}) {
+  try {
+    let query = supabase
+      .from("facturas")
+      .select(`
+        id,
+        usuario_id,
+        obligacion_id,
+        servicio,
+        monto,
+        estado,
+        periodo,
+        fecha_vencimiento,
+        fecha_emision,
+        referencia_pago,
+        etiqueta,
+        creado_en,
+        extraccion_estado,
+        origen,
+        motivo_rechazo,
+        usuarios(id, nombre, apellido, telefono),
+        obligaciones(id, descripcion, numero_referencia, tipo_referencia, pagina_pago)
+      `)
+      .order("fecha_vencimiento", { ascending: true, nullsFirst: true })
+      .order("creado_en", { ascending: false });
+
+    // Filtros
+    if (estado) {
+      if (estado === "pagada") {
+        query = query.eq("estado", "pagada");
+      } else if (estado === "pendiente") {
+        query = query.in("estado", ["extraida", "validada", "en_revision"]);
+      } else if (estado === "sin_factura") {
+        query = query.is("id", null);
+      } else {
+        query = query.eq("estado", estado);
+      }
+    }
+
+    if (usuario_id) query = query.eq("usuario_id", usuario_id);
+    if (periodo) query = query.eq("periodo", periodo);
+
+    // Paginación
+    const offset = (page - 1) * limit;
+    query = query.range(offset, offset + limit - 1).select("*", { count: "exact" });
+
+    const { data, error, count } = await query;
+    if (error) throw new Error(`Error listando facturas: ${error.message}`);
+
+    // Enriquecer datos con información adicional
+    const facturasEnriquecidas = (data || []).map(f => ({
+      id: f.id,
+      factura_id: f.id,
+      usuario_id: f.usuario_id,
+      obligacion_id: f.obligacion_id,
+      servicio: f.servicio,
+      monto: f.monto,
+      estado: f.estado,
+      periodo: f.periodo,
+      fecha_vencimiento: f.fecha_vencimiento,
+      fecha_emision: f.fecha_emision,
+      referencia_pago: f.referencia_pago,
+      etiqueta: f.etiqueta,
+      creado_en: f.creado_en,
+      extraccion_estado: f.extraccion_estado,
+      origen: f.origen,
+      motivo_rechazo: f.motivo_rechazo,
+      usuario: f.usuarios ? {
+        id: f.usuarios.id,
+        nombre: f.usuarios.nombre,
+        apellido: f.usuarios.apellido,
+        telefono: f.usuarios.telefono
+      } : null,
+      obligacion: f.obligaciones ? {
+        id: f.obligaciones.id,
+        descripcion: f.obligaciones.descripcion,
+        numero_referencia: f.obligaciones.numero_referencia,
+        tipo_referencia: f.obligaciones.tipo_referencia,
+        pagina_pago: f.obligaciones.pagina_pago
+      } : null,
+      usuario_nombre: f.usuarios ? `${f.usuarios.nombre} ${f.usuarios.apellido}` : "Sin usuario",
+      badge_color: f.estado === "pagada" ? "green" : f.estado === "validada" ? "blue" : f.estado === "rechazada" ? "red" : "gray"
+    }));
+
+    return success({
+      facturas: facturasEnriquecidas,
+      pagination: {
+        page,
+        limit,
+        total: count || 0,
+        total_pages: Math.ceil((count || 0) / limit)
+      }
+    });
+  } catch (err) {
+    console.error("Error en listarTodasLasFacturas:", err.message);
+    return errors(err.message, 500);
+  }
+}
+
+/**
  * Obtener acciones pendientes por usuario (facturas y recargas directas)
  * Muestra facturas con estado 'extraida' o 'en_revision' y recargas con estado 'reportada' o 'en_validacion'
  * Se consulta directamente de las tablas, sin pasar por revisiones_admin (tabla obsoleta)
@@ -1434,4 +1537,6 @@ module.exports = {
   listarNotificacionesAutomaticas,
   // Funciones para acciones
   obtenerNotificacionesAcciones,
+  // Funciones para facturas
+  listarTodasLasFacturas,
 };
