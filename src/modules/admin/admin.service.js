@@ -1265,94 +1265,127 @@ async function listarNotificacionesAutomaticas(filters = {}) {
 }
 
 /**
- * Obtener acciones pendientes por usuario (revisiones agrupadas + contexto)
- * Muestra facturas y recargas que esperan validación del admin
+ * Obtener acciones pendientes por usuario (facturas y recargas directas)
+ * Muestra facturas con estado 'extraida' o 'en_revision' y recargas con estado 'reportada' o 'en_validacion'
+ * Se consulta directamente de las tablas, sin pasar por revisiones_admin (tabla obsoleta)
  */
 async function obtenerNotificacionesAcciones(filters = {}) {
-  const { usuario_id, tipo, estado = "pendiente", page = 1, limit = 20 } = filters;
+  const { usuario_id, tipo, page = 1, limit = 20 } = filters;
 
   try {
-    // 1. Obtener revisiones pendientes con relaciones
-    let query = supabase
-      .from("revisiones_admin")
+    // 1. Obtener facturas pendientes de validación
+    let queryFacturas = supabase
+      .from("facturas")
       .select(`
         id,
-        tipo,
-        estado,
         usuario_id,
-        factura_id,
-        recarga_id,
-        prioridad,
-        razon,
+        servicio,
+        monto,
+        estado,
+        periodo,
         creado_en,
-        usuarios(id, nombre, apellido, telefono),
-        facturas(id, servicio, monto, estado, periodo),
-        recargas(id, monto, periodo, estado, comprobante_url)
+        extraccion_estado,
+        origen,
+        usuarios(id, nombre, apellido, telefono)
       `)
-      .eq("estado", estado)
-      .order("prioridad", { ascending: true })
+      .in("estado", ["extraida", "en_revision"])
       .order("creado_en", { ascending: false });
 
-    if (usuario_id) query = query.eq("usuario_id", usuario_id);
-    if (tipo) query = query.eq("tipo", tipo);
+    if (usuario_id) queryFacturas = queryFacturas.eq("usuario_id", usuario_id);
+    if (tipo === "factura") queryFacturas = queryFacturas.select("*");
 
-    const { data: revisiones, error: revErr } = await query;
+    const { data: facturas, error: facErr } = await queryFacturas;
+    if (facErr) throw new Error(`Error obteniendo facturas: ${facErr.message}`);
 
-    if (revErr) throw new Error(`Error obteniendo revisiones: ${revErr.message}`);
+    // 2. Obtener recargas pendientes de validación
+    let queryRecargas = supabase
+      .from("recargas")
+      .select(`
+        id,
+        usuario_id,
+        monto,
+        estado,
+        periodo,
+        creado_en,
+        comprobante_url,
+        usuarios(id, nombre, apellido, telefono)
+      `)
+      .in("estado", ["reportada", "en_validacion"])
+      .order("creado_en", { ascending: false });
 
-    // 2. Procesar y agrupar por usuario
+    if (usuario_id) queryRecargas = queryRecargas.eq("usuario_id", usuario_id);
+    if (tipo === "recarga") queryRecargas = queryRecargas.select("*");
+
+    const { data: recargas, error: recErr } = await queryRecargas;
+    if (recErr) throw new Error(`Error obteniendo recargas: ${recErr.message}`);
+
+    // 3. Procesar y agrupar por usuario
     const accionesPorUsuario = {};
 
-    for (const rev of revisiones || []) {
-      if (!rev.usuario_id) continue;
+    // Procesar facturas
+    for (const fac of facturas || []) {
+      if (!fac.usuario_id) continue;
 
-      const usuarioId = rev.usuario_id;
+      const usuarioId = fac.usuario_id;
       if (!accionesPorUsuario[usuarioId]) {
         accionesPorUsuario[usuarioId] = {
           usuario_id: usuarioId,
-          usuario: rev.usuarios,
+          usuario: fac.usuarios,
           acciones: [],
           total: 0
         };
       }
 
-      // Preparar acción según tipo
-      let accion = {
-        revision_id: rev.id,
-        tipo: rev.tipo,
-        prioridad: rev.prioridad,
-        razon: rev.razon,
-        creado_en: rev.creado_en,
-        estado: rev.estado
+      const accion = {
+        id: fac.id,
+        tipo: "factura",
+        factura_id: fac.id,
+        servicio: fac.servicio || "Sin servicio",
+        monto: fac.monto,
+        periodo: fac.periodo,
+        estado: fac.estado,
+        extraccion_estado: fac.extraccion_estado,
+        origen: fac.origen,
+        es_heredada: fac.origen === 'auto',
+        creado_en: fac.creado_en,
+        display_label: `📄 ${fac.servicio || 'Sin servicio'} - $${Number(fac.monto || 0).toLocaleString()}`
       };
-
-      if (rev.tipo === "factura" && rev.facturas) {
-        accion = {
-          ...accion,
-          factura_id: rev.facturas.id,
-          servicio: rev.facturas.servicio,
-          monto: rev.facturas.monto,
-          periodo: rev.facturas.periodo,
-          factura_estado: rev.facturas.estado,
-          display_label: `📄 ${rev.facturas.servicio} - $${Number(rev.facturas.monto || 0).toLocaleString()}`
-        };
-      } else if (rev.tipo === "recarga" && rev.recargas) {
-        accion = {
-          ...accion,
-          recarga_id: rev.recargas.id,
-          monto: rev.recargas.monto,
-          periodo: rev.recargas.periodo,
-          recarga_estado: rev.recargas.estado,
-          comprobante_url: rev.recargas.comprobante_url,
-          display_label: `💳 Recarga - $${Number(rev.recargas.monto || 0).toLocaleString()}`
-        };
-      }
 
       accionesPorUsuario[usuarioId].acciones.push(accion);
       accionesPorUsuario[usuarioId].total++;
     }
 
-    // 3. Convertir a array y ordenar por último acontecimiento
+    // Procesar recargas
+    for (const rec of recargas || []) {
+      if (!rec.usuario_id) continue;
+
+      const usuarioId = rec.usuario_id;
+      if (!accionesPorUsuario[usuarioId]) {
+        accionesPorUsuario[usuarioId] = {
+          usuario_id: usuarioId,
+          usuario: rec.usuarios,
+          acciones: [],
+          total: 0
+        };
+      }
+
+      const accion = {
+        id: rec.id,
+        tipo: "recarga",
+        recarga_id: rec.id,
+        monto: rec.monto,
+        periodo: rec.periodo,
+        estado: rec.estado,
+        comprobante_url: rec.comprobante_url,
+        creado_en: rec.creado_en,
+        display_label: `💳 Recarga - $${Number(rec.monto || 0).toLocaleString()}`
+      };
+
+      accionesPorUsuario[usuarioId].acciones.push(accion);
+      accionesPorUsuario[usuarioId].total++;
+    }
+
+    // 4. Convertir a array y ordenar por último acontecimiento
     const accionesArray = Object.values(accionesPorUsuario)
       .sort((a, b) => {
         const ultimoA = new Date(a.acciones[0]?.creado_en || 0).getTime();
@@ -1360,14 +1393,15 @@ async function obtenerNotificacionesAcciones(filters = {}) {
         return ultimoB - ultimoA;
       });
 
-    // 4. Paginar
+    // 5. Paginar
     const totalUsuarios = accionesArray.length;
+    const totalAcciones = (facturas?.length || 0) + (recargas?.length || 0);
     const paginadas = accionesArray.slice((page - 1) * limit, page * limit);
 
     return success({
       acciones_por_usuario: paginadas,
       total_usuarios: totalUsuarios,
-      total_acciones: revisiones.length,
+      total_acciones: totalAcciones,
       page,
       limit,
       total_pages: Math.ceil(totalUsuarios / limit)

@@ -95,8 +95,10 @@ async function jobEvaluacionRecargas() {
           
           if (!yaEnviadaHoy) {
             // 2.6: Preparar datos y crear notificación estructurada
+            // MODIFICADO: Pasar usuario_id y periodo para obtener TODAS las obligaciones
             const datos = await prepararDatosNotificacion(
-              resultado.obligacionId, 
+              resultado.usuarioId, 
+              obligacion.periodo,
               esPrimeraRecarga
             );
             
