@@ -1219,6 +1219,7 @@ async function obtenerNotificacionesAcciones(filters = {}) {
         periodo,
         creado_en,
         extraccion_estado,
+        origen,
         usuarios(id, nombre, apellido, telefono)
       `)
       .in("estado", ["extraida", "en_revision"])
@@ -1278,6 +1279,8 @@ async function obtenerNotificacionesAcciones(filters = {}) {
         periodo: fac.periodo,
         estado: fac.estado,
         extraccion_estado: fac.extraccion_estado,
+        origen: fac.origen,
+        es_heredada: fac.origen === 'auto',
         creado_en: fac.creado_en,
         display_label: `📄 ${fac.servicio || 'Sin servicio'} - $${Number(fac.monto || 0).toLocaleString()}`
       };
