@@ -5,7 +5,7 @@
 const { Router } = require("express");
 const { authAdmin } = require("../../middleware/auth");
 const { validateQuery, validateBody } = require("../../middleware/validate");
-const { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema } = require("./admin.schema");
+const { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema } = require("./admin.schema");
 const service = require("./admin.service");
 
 const router = Router();
@@ -70,6 +70,16 @@ router.get("/users/by-telefono/:telefono", authAdmin, async (req, res, next) => 
 router.post("/users/upsert", authAdmin, validateBody(upsertUsuarioAdminSchema), async (req, res, next) => {
   try {
     const result = await service.upsertUsuarioAdmin(req.validatedBody);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/users/:id — Actualizar usuario por ID (permite cambiar teléfono)
+router.put("/users/:id", authAdmin, validateBody(updateUsuarioAdminSchema), async (req, res, next) => {
+  try {
+    const result = await service.updateUsuarioAdmin(req.params.id, req.validatedBody);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);

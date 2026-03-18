@@ -216,12 +216,14 @@ async function buscarUsuario() {
           <dl class="detail-grid">
             <dt>ID</dt><dd>${shortId(u.usuario_id)}</dd>
             <dt>Teléfono</dt><dd>${u.telefono}</dd>
-            <dt>Email</dt><dd>${u.email || '—'}</dd>
-            <dt>Tipo doc</dt><dd>${u.tipo_documento || '—'}</dd>
-            <dt>Documento</dt><dd>${u.numero_documento || '—'}</dd>
-            <dt>Registrado</dt><dd>${fmtDateTime(u.creado_en)}</dd>
+            <dt>Email</dt><dd>${u.correo || '—'}</dd>
+            <dt>Plan</dt><dd>${u.plan || '—'}</dd>
+            <dt>Dirección</dt><dd>${u.direccion || '—'}</dd>
           </dl>
           <div class="mt-4">
+            <button class="btn btn-warning btn-sm" onclick="abrirEditarUsuario('${u.usuario_id}', '${u.telefono}', '${u.nombre || ''}', '${u.apellido || ''}', '${u.correo || ''}', '${u.direccion || ''}', '${u.plan || 'control'}')">
+              ✏️ Editar Usuario
+            </button>
             <button class="btn btn-primary btn-sm" onclick="navigate('obligaciones'); setTimeout(()=>document.getElementById('oblTelefono')&&(document.getElementById('oblTelefono').value='${u.telefono}'),100)">
               📋 Ver Obligaciones
             </button>
@@ -243,14 +245,6 @@ function abrirCrearUsuario() {
       <div class="form-group"><label>Apellido</label><input class="form-control" id="nuApellido"></div>
     </div>
     <div class="form-group"><label>Email</label><input class="form-control" id="nuEmail" type="email"></div>
-    <div class="form-row">
-      <div class="form-group"><label>Tipo Doc</label>
-        <select class="form-control" id="nuTipoDoc">
-          <option value="">—</option><option value="CC">CC</option><option value="CE">CE</option><option value="NIT">NIT</option><option value="PP">PP</option>
-        </select>
-      </div>
-      <div class="form-group"><label>Número Doc</label><input class="form-control" id="nuNumDoc"></div>
-    </div>
   `, `<button class="btn btn-success" onclick="crearUsuario()">✅ Crear</button><button class="btn btn-outline" onclick="closeModal()">Cancelar</button>`);
 }
 
@@ -260,15 +254,54 @@ async function crearUsuario() {
       telefono: document.getElementById('nuTelefono').value.trim(),
       nombre: document.getElementById('nuNombre').value.trim(),
       apellido: document.getElementById('nuApellido').value.trim() || undefined,
-      email: document.getElementById('nuEmail').value.trim() || undefined,
-      tipo_documento: document.getElementById('nuTipoDoc').value || undefined,
-      numero_documento: document.getElementById('nuNumDoc').value.trim() || undefined,
+      correo: document.getElementById('nuEmail').value.trim() || undefined,
     };
     if (!body.telefono || !body.nombre) return toast('Teléfono y nombre son requeridos', 'error');
     await api('POST', '/users/upsert', body);
     toast('Usuario creado ✅', 'success');
     closeModal();
     document.getElementById('userTelefono').value = body.telefono;
+    buscarUsuario();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function abrirEditarUsuario(id, telefono, nombre, apellido, correo, direccion, plan) {
+  openModal('Editar Usuario', `
+    <div class="form-group"><label>Teléfono</label><input class="form-control" id="edTelefono" value="${telefono}"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Nombre</label><input class="form-control" id="edNombre" value="${nombre}"></div>
+      <div class="form-group"><label>Apellido</label><input class="form-control" id="edApellido" value="${apellido}"></div>
+    </div>
+    <div class="form-group"><label>Email</label><input class="form-control" id="edCorreo" type="email" value="${correo}"></div>
+    <div class="form-group"><label>Dirección</label><input class="form-control" id="edDireccion" value="${direccion}"></div>
+    <div class="form-group"><label>Plan</label>
+      <select class="form-control" id="edPlan">
+        <option value="control" ${plan === 'control' ? 'selected' : ''}>Control</option>
+        <option value="tranquilidad" ${plan === 'tranquilidad' ? 'selected' : ''}>Tranquilidad</option>
+        <option value="respaldo" ${plan === 'respaldo' ? 'selected' : ''}>Respaldo</option>
+      </select>
+    </div>
+    <input type="hidden" id="edUserId" value="${id}">
+  `, `<button class="btn btn-success" onclick="guardarEdicionUsuario()">💾 Guardar</button><button class="btn btn-outline" onclick="closeModal()">Cancelar</button>`);
+}
+
+async function guardarEdicionUsuario() {
+  try {
+    const userId = document.getElementById('edUserId').value;
+    const body = {
+      telefono: document.getElementById('edTelefono').value.trim() || undefined,
+      nombre: document.getElementById('edNombre').value.trim() || undefined,
+      apellido: document.getElementById('edApellido').value.trim() || undefined,
+      correo: document.getElementById('edCorreo').value.trim() || undefined,
+      direccion: document.getElementById('edDireccion').value.trim() || undefined,
+      plan: document.getElementById('edPlan').value || undefined,
+    };
+    await api('PUT', `/users/${userId}`, body);
+    toast('Usuario actualizado ✅', 'success');
+    closeModal();
+    document.getElementById('userTelefono').value = body.telefono || '';
     buscarUsuario();
   } catch (err) {
     toast(err.message, 'error');

@@ -675,11 +675,77 @@ async function upsertUsuarioAdmin({ telefono, nombre, apellido, correo, direccio
 }
 
 /**
+ * Actualizar usuario por ID (ADMIN-ONLY)
+ * Permite cambiar cualquier campo incluyendo teléfono.
+ */
+async function updateUsuarioAdmin(userId, fields) {
+  // 1. Verificar que el usuario existe
+  const { data: existing, error: findErr } = await supabase
+    .from("usuarios")
+    .select("*")
+    .eq("id", userId)
+    .single();
+
+  if (findErr || !existing) {
+    return errors.notFound("Usuario no encontrado");
+  }
+
+  // 2. Construir objeto de actualización con solo los campos enviados
+  const updates = {};
+  if (fields.telefono !== undefined) updates.telefono = fields.telefono;
+  if (fields.nombre !== undefined) updates.nombre = fields.nombre;
+  if (fields.apellido !== undefined) updates.apellido = fields.apellido;
+  if (fields.correo !== undefined) updates.correo = fields.correo;
+  if (fields.direccion !== undefined) updates.direccion = fields.direccion;
+  if (fields.plan !== undefined) updates.plan = fields.plan;
+  if (fields.activo !== undefined) updates.activo = fields.activo;
+
+  if (Object.keys(updates).length === 0) {
+    return errors.badRequest("No se enviaron campos para actualizar");
+  }
+
+  // 3. Si se cambia teléfono, verificar que no esté en uso por otro usuario
+  if (updates.telefono && updates.telefono !== existing.telefono) {
+    const { data: duplicado } = await supabase
+      .from("usuarios")
+      .select("id")
+      .eq("telefono", updates.telefono)
+      .neq("id", userId)
+      .single();
+
+    if (duplicado) {
+      return errors.conflict("Ya existe otro usuario con ese número de teléfono");
+    }
+  }
+
+  // 4. Actualizar
+  const { data: updated, error: updateErr } = await supabase
+    .from("usuarios")
+    .update(updates)
+    .eq("id", userId)
+    .select()
+    .single();
+
+  if (updateErr) throw new Error(`Error actualizando usuario: ${updateErr.message}`);
+
+  return success({
+    usuario_id: updated.id,
+    telefono: updated.telefono,
+    nombre: updated.nombre,
+    apellido: updated.apellido,
+    correo: updated.correo,
+    direccion: updated.direccion,
+    plan: updated.plan,
+    activo: updated.activo,
+  });
+}
+
+/**
  * Buscar usuario por teléfono (ADMIN-ONLY)
  */
 async function getUsuarioByTelefono(telefono) {
   if (!telefono) {
-    return errors(400, "BAD_REQUEST", "El teléfono es requerido");
+    return errors.badRequest("El teléfono es requerido");
   }
 
   const { data, error } = await supabase
@@ -693,7 +759,7 @@ async function getUsuarioByTelefono(telefono) {
   }
 
   if (!data) {
-    return errors(404, "NOT_FOUND", "Usuario no encontrado");
+    return errors.notFound("Usuario no encontrado");
   }
 
   return success({
@@ -1319,6 +1385,7 @@ module.exports = {
   historialPagos,
   dashboard,
   upsertUsuarioAdmin,
+  updateUsuarioAdmin,
   getUsuarioByTelefono,
   // Nuevas funciones para notificaciones
   listarNotificacionesAdmin,

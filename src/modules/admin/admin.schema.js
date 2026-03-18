@@ -30,4 +30,15 @@ const upsertUsuarioAdminSchema = z.object({
   plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
 });
 
-module.exports = { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema };
+// Schema para actualizar usuario por ID (admin puede cambiar teléfono)
+const updateUsuarioAdminSchema = z.object({
+  telefono: z.string().min(7).optional(),
+  nombre: z.string().optional(),
+  apellido: z.string().optional(),
+  correo: z.string().email().optional().nullable(),
+  direccion: z.string().optional().nullable(),
+  plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
+  activo: z.boolean().optional(),
+});
+
+module.exports = { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema };
