@@ -208,13 +208,13 @@ router.get("/notificaciones/:alerta_id/solicitud-original", authAdmin, async (re
 });
 
 // GET /api/admin/notificaciones/acciones
+// Retorna facturas (estado: extraida/en_revision) y recargas (estado: reportada/en_validacion) agrupadas por usuario
 router.get("/notificaciones/acciones", authAdmin, async (req, res, next) => {
   try {
-    const { usuario_id, tipo, estado, page, limit } = req.query;
+    const { usuario_id, tipo, page, limit } = req.query;
     const filters = {
       usuario_id: usuario_id || undefined,
       tipo: tipo || undefined,
-      estado: estado || "pendiente",
       page: page ? parseInt(page) : 1,
       limit: limit ? parseInt(limit) : 20
     };
