@@ -169,7 +169,7 @@ async function validarFactura(facturaId, body, adminId) {
   });
 
   // Notificar al usuario
-  await crearNotificacionInterna({
+  const notificacion = await crearNotificacionInterna({
     usuario_id: factura.usuario_id,
     tipo: "factura_validada",
     canal: "whatsapp",
@@ -181,7 +181,16 @@ async function validarFactura(facturaId, body, adminId) {
     },
   });
 
-  return success({ factura_id: facturaId, servicio: updated.servicio, estado: "validada" });
+  return success({
+    factura_id: facturaId,
+    servicio: updated.servicio,
+    estado: "validada",
+    notificacion: notificacion ? {
+      id: notificacion.id,
+      tipo: notificacion.tipo,
+      mensaje: notificacion.payload?.mensaje || "",
+    } : null,
+  });
 }
 
 /**
@@ -236,7 +245,7 @@ async function rechazarFactura(facturaId, body, adminId) {
   });
 
   // Notificar al usuario
-  await crearNotificacionInterna({
+  const notificacion = await crearNotificacionInterna({
     usuario_id: factura.usuario_id,
     tipo: "factura_rechazada",
     canal: "whatsapp",
@@ -248,7 +257,14 @@ async function rechazarFactura(facturaId, body, adminId) {
     },
   });
 
-  return success({ factura_id: facturaId, estado: "rechazada" });
+  return success({
+    ...updated,
+    notificacion: notificacion ? {
+      id: notificacion.id,
+      tipo: notificacion.tipo,
+      mensaje: notificacion.payload?.mensaje || "",
+    } : null,
+  });
 }
 
 /**

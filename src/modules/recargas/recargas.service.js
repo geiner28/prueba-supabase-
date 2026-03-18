@@ -147,7 +147,7 @@ async function aprobarRecarga(recargaId, body, adminId) {
   });
 
   // Notificar al usuario que su recarga fue aprobada
-  await crearNotificacionInterna({
+  const notificacion = await crearNotificacionInterna({
     usuario_id: recarga.usuario_id,
     tipo: "recarga_aprobada",
     canal: "whatsapp",
@@ -283,7 +283,14 @@ async function aprobarRecarga(recargaId, body, adminId) {
     console.error("[RECARGAS] Error actualizando solicitudes de recarga:", err.message);
   }
 
-  return success(updated);
+  return success({
+    ...updated,
+    notificacion: notificacion ? {
+      id: notificacion.id,
+      tipo: notificacion.tipo,
+      mensaje: notificacion.payload?.mensaje || "",
+    } : null,
+  });
 }
 
 /**
@@ -388,7 +395,7 @@ async function rechazarRecarga(recargaId, body, adminId) {
   });
 
   // Notificar al usuario que su recarga fue rechazada
-  await crearNotificacionInterna({
+  const notificacion = await crearNotificacionInterna({
     usuario_id: recarga.usuario_id,
     tipo: "recarga_rechazada",
     canal: "whatsapp",
@@ -400,7 +407,14 @@ async function rechazarRecarga(recargaId, body, adminId) {
     },
   });
 
-  return success(updated);
+  return success({
+    ...updated,
+    notificacion: notificacion ? {
+      id: notificacion.id,
+      tipo: notificacion.tipo,
+      mensaje: notificacion.payload?.mensaje || "",
+    } : null,
+  });
 }
 
 module.exports = { reportarRecarga, aprobarRecarga, rechazarRecarga, obtenerRecargasPendientesPorTelefono };
