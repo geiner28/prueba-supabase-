@@ -1283,14 +1283,15 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
         fecha_vencimiento,
         fecha_emision,
         referencia_pago,
+        archivo_url,
         etiqueta,
         creado_en,
         extraccion_estado,
         origen,
         motivo_rechazo,
-        usuarios(id, nombre, apellido, telefono),
-        obligaciones(id, descripcion, numero_referencia, tipo_referencia, pagina_pago)
-      `)
+        usuario:usuario_id(id, nombre, apellido, telefono, plan),
+        obligaciones!obligacion_id(id, descripcion, numero_referencia, tipo_referencia)
+      `, { count: "exact" })
       .order("fecha_vencimiento", { ascending: true, nullsFirst: true })
       .order("creado_en", { ascending: false });
 
@@ -1299,9 +1300,14 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
       if (estado === "pagada") {
         query = query.eq("estado", "pagada");
       } else if (estado === "pendiente") {
-        query = query.in("estado", ["extraida", "validada", "en_revision"]);
+        // Pendientes = facturas validadas (no pagadas)
+        query = query.eq("estado", "validada");
       } else if (estado === "sin_factura") {
-        query = query.is("id", null);
+        // Sin factura = sin validar (extraida) Y origen auto
+        query = query.eq("estado", "extraida").eq("origen", "auto");
+      } else if (estado === "sin_validar") {
+        // Sin validar = sin validar (extraida) pero NO auto
+        query = query.eq("estado", "extraida").neq("origen", "auto");
       } else {
         query = query.eq("estado", estado);
       }
@@ -1312,7 +1318,7 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
 
     // Paginación
     const offset = (page - 1) * limit;
-    query = query.range(offset, offset + limit - 1).select("*", { count: "exact" });
+    query = query.range(offset, offset + limit - 1);
 
     const { data, error, count } = await query;
     if (error) throw new Error(`Error listando facturas: ${error.message}`);
@@ -1330,25 +1336,26 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
       fecha_vencimiento: f.fecha_vencimiento,
       fecha_emision: f.fecha_emision,
       referencia_pago: f.referencia_pago,
+      archivo_url: f.archivo_url,
       etiqueta: f.etiqueta,
       creado_en: f.creado_en,
       extraccion_estado: f.extraccion_estado,
       origen: f.origen,
       motivo_rechazo: f.motivo_rechazo,
-      usuario: f.usuarios ? {
-        id: f.usuarios.id,
-        nombre: f.usuarios.nombre,
-        apellido: f.usuarios.apellido,
-        telefono: f.usuarios.telefono
+      usuario: f.usuario ? {
+        id: f.usuario.id,
+        nombre: f.usuario.nombre,
+        apellido: f.usuario.apellido,
+        telefono: f.usuario.telefono,
+        plan: f.usuario.plan
       } : null,
       obligacion: f.obligaciones ? {
         id: f.obligaciones.id,
         descripcion: f.obligaciones.descripcion,
         numero_referencia: f.obligaciones.numero_referencia,
-        tipo_referencia: f.obligaciones.tipo_referencia,
-        pagina_pago: f.obligaciones.pagina_pago
+        tipo_referencia: f.obligaciones.tipo_referencia
       } : null,
-      usuario_nombre: f.usuarios ? `${f.usuarios.nombre} ${f.usuarios.apellido}` : "Sin usuario",
+      usuario_nombre: f.usuario ? `${f.usuario.nombre} ${f.usuario.apellido}` : "Sin usuario",
       badge_color: f.estado === "pagada" ? "green" : f.estado === "validada" ? "blue" : f.estado === "rechazada" ? "red" : "gray"
     }));
 
