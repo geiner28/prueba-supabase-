@@ -1632,6 +1632,92 @@ async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde
   }
 }
 
+/**
+ * Transacciones unificadas (pagos + recargas) para vista admin.
+ */
+async function listarTransacciones({ page = 1, limit = 8, tipo, usuario_id, search }) {
+  try {
+    const items = [];
+
+    // ── 1. Pagos ──
+    if (!tipo || tipo === "pago") {
+      let q = supabase
+        .from("pagos")
+        .select("id, creado_en, ejecutado_en, usuario_id, monto_aplicado, proveedor_pago, referencia_pago, estado, facturas(servicio, obligacion_id, obligaciones(servicio, tipo_referencia, numero_referencia)), usuarios(nombre, apellido)");
+      if (usuario_id) q = q.eq("usuario_id", usuario_id);
+      const { data, error } = await q;
+      if (error) throw new Error(`Error consultando pagos: ${error.message}`);
+      (data || []).forEach((p) => {
+        const obligacion = p.facturas?.obligaciones;
+        const nombre = p.facturas?.servicio || obligacion?.servicio || null;
+        const nombreCompleto = [p.usuarios?.nombre, p.usuarios?.apellido].filter(Boolean).join(" ");
+        items.push({
+          id: p.id,
+          tipo: "pago",
+          nombre: nombre,
+          tipo_referencia: obligacion?.tipo_referencia || null,
+          numero_referencia: obligacion?.numero_referencia || p.referencia_pago || null,
+          fecha: p.ejecutado_en || p.creado_en,
+          usuario_nombre: nombreCompleto,
+          usuario_id: p.usuario_id,
+          pagador: p.proveedor_pago || "deOne",
+          monto: Number(p.monto_aplicado || 0),
+        });
+      });
+    }
+
+    // ── 2. Recargas ──
+    if (!tipo || tipo === "recarga") {
+      let q = supabase
+        .from("recargas")
+        .select("id, creado_en, usuario_id, monto, referencia_tx, estado, usuarios(nombre, apellido)");
+      if (usuario_id) q = q.eq("usuario_id", usuario_id);
+      const { data, error } = await q;
+      if (error) throw new Error(`Error consultando recargas: ${error.message}`);
+      (data || []).forEach((r) => {
+        const nombreCompleto = [r.usuarios?.nombre, r.usuarios?.apellido].filter(Boolean).join(" ");
+        items.push({
+          id: r.id,
+          tipo: "recarga",
+          nombre: "Recarga",
+          tipo_referencia: null,
+          numero_referencia: r.referencia_tx || null,
+          fecha: r.creado_en,
+          usuario_nombre: nombreCompleto,
+          usuario_id: r.usuario_id,
+          pagador: null,
+          monto: Number(r.monto || 0),
+        });
+      });
+    }
+
+    // ── Filtro por búsqueda ──
+    let filtered = items;
+    if (search) {
+      const term = search.toLowerCase();
+      filtered = items.filter((t) =>
+        (t.usuario_nombre && t.usuario_nombre.toLowerCase().includes(term)) ||
+        (t.nombre && t.nombre.toLowerCase().includes(term)) ||
+        (t.numero_referencia && t.numero_referencia.toLowerCase().includes(term))
+      );
+    }
+
+    // ── Ordenar por fecha descendente ──
+    filtered.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+    // ── Paginar ──
+    const total = filtered.length;
+    const total_pages = Math.ceil(total / limit);
+    const offset = (page - 1) * limit;
+    const transacciones = filtered.slice(offset, offset + limit);
+
+    return success({ transacciones, total, page, limit, total_pages });
+  } catch (err) {
+    console.error("Error en listarTransacciones:", err.message);
+    return errors.internal(err.message);
+  }
+}
+
 module.exports = {
   listarClientes,
   perfilCompletoCliente,
@@ -1657,4 +1743,6 @@ module.exports = {
   listarTodasLasFacturas,
   // Historial unificado
   historialUnificado,
+  // Transacciones unificadas
+  listarTransacciones,
 };

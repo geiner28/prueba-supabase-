@@ -50,4 +50,12 @@ const queryHistorialSchema = z.object({
   hasta: z.string().optional(),
 });
 
-module.exports = { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema, queryHistorialSchema };
+const queryTransaccionesSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(8),
+  tipo: z.enum(["pago", "recarga"]).optional(),
+  usuario_id: z.string().uuid().optional(),
+  search: z.string().optional(),
+});
+
+module.exports = { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema, queryHistorialSchema, queryTransaccionesSchema };

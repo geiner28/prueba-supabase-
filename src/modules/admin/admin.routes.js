@@ -5,7 +5,7 @@
 const { Router } = require("express");
 const { authAdmin } = require("../../middleware/auth");
 const { validateQuery, validateBody } = require("../../middleware/validate");
-const { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema, queryHistorialSchema } = require("./admin.schema");
+const { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema, queryHistorialSchema, queryTransaccionesSchema } = require("./admin.schema");
 const service = require("./admin.service");
 
 const router = Router();
@@ -260,6 +260,16 @@ router.get("/facturas", authAdmin, async (req, res, next) => {
       limit: req.query.limit ? parseInt(req.query.limit) : 50
     };
     const result = await service.listarTodasLasFacturas(filters);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/transacciones — Transacciones unificadas (pagos + recargas)
+router.get("/transacciones", authAdmin, validateQuery(queryTransaccionesSchema), async (req, res, next) => {
+  try {
+    const result = await service.listarTransacciones(req.validatedQuery);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);
