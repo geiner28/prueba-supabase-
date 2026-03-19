@@ -835,22 +835,18 @@ async function calcularSaldoUsuario(usuarioId, periodo) {
   
   const totalRecargas = (recargas || []).reduce((sum, r) => sum + Number(r.monto || 0), 0);
   
-  // Obtener pagos realizados del periodo (obteniendo el periodo de la factura relacionada)
+  // Obtener TODOS los pagos realizados históricamente (acumulativo como las recargas)
   const { data: pagos, error: pagErr } = await supabase
     .from('pagos')
-    .select('monto_aplicado, facturas(periodo)')
+    .select('monto_aplicado')
     .eq('usuario_id', usuarioId)
     .eq('estado', 'pagado');
   
   if (pagErr) throw new Error(`Error obteniendo pagos: ${pagErr.message}`);
   
-  // Filtrar pagos por periodo usando la relación con facturas
+  // Sumar TODOS los pagos sin filtrar por periodo (saldo acumulativo consistente con recargas)
   const totalPagos = (pagos || []).reduce((sum, p) => {
-    const periodoFactura = p.facturas?.periodo;
-    if (periodoFactura === periodo) {
-      return sum + Number(p.monto_aplicado || 0);
-    }
-    return sum;
+    return sum + Number(p.monto_aplicado || 0);
   }, 0);
   
   return totalRecargas - totalPagos;
@@ -936,8 +932,12 @@ async function obtenerObligacionesActivas() {
 /**
  * Crea o actualiza una solicitud de recarga
  * Usa maybeSingle() para evitar error si no existe
+ * @param {Object} obligacion - Objeto obligación
+ * @param {Number} montoPendiente - Monto pendiente calculado
+ * @param {String} fechaRecordatorioCalculada - Fecha recordatorio calculada (vencimiento - 5 días)
+ * @param {Array} facturasValidadas - Array de facturas validadas con sus IDs
  */
-async function crearOActualizarSolicitud(obligacion, montoPendiente) {
+async function crearOActualizarSolicitud(obligacion, montoPendiente, fechaRecordatorioCalculada, facturasValidadas) {
   // Buscar solicitud existente
   const { data: existente, error: findErr } = await supabase
     .from('solicitudes_recarga')
@@ -965,16 +965,25 @@ async function crearOActualizarSolicitud(obligacion, montoPendiente) {
     return existente;
   }
   
-  // Calcular fecha_limite y fecha_recordatorio
-  // Usar el periodo de la obligación o el mes actual
-  const periodo = obligacion.periodo || new Date().toISOString().slice(0, 7) + '-01';
+  // Usar las fechas calculadas desde evaluarObligacion()
+  // fechaRecordatorio = vencimiento - 5 días (viene en parámetro)
+  // fechaLimite = vencimiento (recordatorio + 5 días)
+  const fechaRecordatorio = fechaRecordatorioCalculada;
+  let fechaLimite = new Date().toISOString().split('T')[0]; // Fallback
   
-  // Calcular fecha de recordatorio: día 15 del mes actual
-  const hoy = new Date();
-  const anio = hoy.getFullYear();
-  const mes = hoy.getMonth();
-  const fechaLimite = new Date(anio, mes, 15).toISOString().split('T')[0]; // Día 15
-  const fechaRecordatorio = new Date(anio, mes, 10).toISOString().split('T')[0]; // Día 10
+  if (fechaRecordatorioCalculada) {
+    // Parsear fecha en formato YYYY-MM-DD manualmente
+    const [year, month, day] = fechaRecordatorioCalculada.split('-').map(Number);
+    // Crear fecha LOCAL (no UTC) para evitar problemas de timezone
+    const fechaRecordatorioDate = new Date(year, month - 1, day);
+    // Sumar 5 días
+    fechaRecordatorioDate.setDate(fechaRecordatorioDate.getDate() + 5);
+    // Formatear de vuelta a YYYY-MM-DD
+    const año = fechaRecordatorioDate.getFullYear();
+    const mes = String(fechaRecordatorioDate.getMonth() + 1).padStart(2, '0');
+    const dia = String(fechaRecordatorioDate.getDate()).padStart(2, '0');
+    fechaLimite = `${año}-${mes}-${dia}`;
+  }
   
   // Crear nueva solicitud
   const { data: nueva, error } = await supabase
@@ -990,6 +999,7 @@ async function crearOActualizarSolicitud(obligacion, montoPendiente) {
       plan: obligacion.usuarios?.plan || 'control',
       fecha_limite: fechaLimite,
       fecha_recordatorio: fechaRecordatorio,
+      facturas_ids: (facturasValidadas || []).map(f => f.id),
     })
     .select()
     .single();
@@ -1087,7 +1097,7 @@ async function evaluarObligacion(obligacionId) {
     const montoPendiente = Math.max(0, totalObligaciones - saldoUsuario);
     
     if (montoPendiente > 0) {
-      await crearOActualizarSolicitud(obligacion, montoPendiente);
+      await crearOActualizarSolicitud(obligacion, montoPendiente, fechaRecordatorioObligacion, facturas);
     }
     console.log(`[JOBS] Obligación ${obligacionId}: fecha recordatorio ${fechaRecordatorioObligacion} > ${hoy}, sin notificación`);
     return { 
@@ -1116,7 +1126,7 @@ async function evaluarObligacion(obligacionId) {
   }
   
   // 8. Crear o actualizar solicitud
-  const solicitud = await crearOActualizarSolicitud(obligacion, montoPendiente);
+  const solicitud = await crearOActualizarSolicitud(obligacion, montoPendiente, fechaRecordatorioObligacion, facturas);
   
   return {
     solicitudCargada: true,
