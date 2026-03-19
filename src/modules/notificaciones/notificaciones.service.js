@@ -177,7 +177,7 @@ async function obtenerPendientesHoyGlobal() {
   const { data: pendientes, error: queryError } = await supabase
     .from("notificaciones")
     .select("*, usuarios(nombre, apellido, telefono)")
-    .eq("estado", "pendiente")
+    .in("estado", ["pendiente", "entregada"])
     .eq("tipo", "solicitud_recarga_inicio_mes")
     .gte("creado_en", inicioDia)
     .lte("creado_en", finDia)
@@ -191,15 +191,15 @@ async function obtenerPendientesHoyGlobal() {
     const { error: updateError } = await supabase
       .from("notificaciones")
       .update({
-        estado: "enviada",
+        estado: "entregada",
         ultimo_error: null,
       })
       .in("id", idsActualizar);
 
     if (updateError) {
-      console.error("[NOTIFICACIONES] Error cambiando estado a enviada (global):", updateError.message);
+      console.error("[NOTIFICACIONES] Error cambiando estado a entregada (global):", updateError.message);
     } else {
-      console.log(`[NOTIFICACIONES] ${idsActualizar.length} notificaciones de hoy marcadas como enviadas (global)`);
+      console.log(`[NOTIFICACIONES] ${idsActualizar.length} notificaciones de hoy marcadas como entregadas (global)`);
     }
   }
 
