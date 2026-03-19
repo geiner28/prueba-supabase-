@@ -445,24 +445,21 @@ async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
   const mesAnterior = getNombreMesAnterior();
   
   // Obtener total del mes anterior (pagos realizados SOLO del mes anterior)
-  // Calcular período anterior dinámicamente
-  const fechaActual = new Date(periodo);
-  fechaActual.setMonth(fechaActual.getMonth() - 1);
-  const periodoAnterior = fechaActual.toISOString().split('T')[0];
+  // Rango: desde primer día de mes anterior hasta primer día del mes actual
+  const [year, month] = periodo.split('-').map(Number);
+  const inicioMesAnterior = new Date(Date.UTC(year, month - 2, 1)).toISOString();
+  const inicioMesActual = new Date(Date.UTC(year, month - 1, 1)).toISOString();
   
   const { data: pagosMesAnterior } = await supabase
     .from('pagos')
-    .select('monto_aplicado, facturas(periodo)')
+    .select('monto_aplicado')
     .eq('usuario_id', usuarioId)
-    .eq('estado', 'pagado');
+    .eq('estado', 'pagado')
+    .gte('ejecutado_en', inicioMesAnterior)
+    .lt('ejecutado_en', inicioMesActual);
 
   const totalMesAnterior = (pagosMesAnterior || []).reduce((sum, p) => {
-    const periodoFactura = p.facturas?.periodo;
-    // Solo contar pagos del período anterior
-    if (periodoFactura === periodoAnterior) {
-      return sum + Number(p.monto_aplicado || 0);
-    }
-    return sum;
+    return sum + Number(p.monto_aplicado || 0);
   }, 0);
   
   // PASO 4: Preparar obligaciones - cada factura es una línea individual (sin agrupar)
@@ -508,6 +505,7 @@ async function crearNotificacionRecarga(usuarioId, tipo, datos) {
     mes_anterior: datos.mes_anterior || getNombreMesAnterior(),
     obligaciones: datos.obligaciones || [],
     total_obligaciones: datos.total_obligaciones || 0,
+    total_mes_anterior: datos.total_mes_anterior || 0,
     saldo_actual: datos.saldo_actual || 0,
     valor_a_recargar: datos.valor_a_recargar || 0,
     es_primera_recarga: datos.es_primera_recarga || false,
