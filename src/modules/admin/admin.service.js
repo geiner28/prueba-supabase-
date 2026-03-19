@@ -1516,6 +1516,122 @@ async function obtenerNotificacionesAcciones(filters = {}) {
   }
 }
 
+/**
+ * Historial unificado para el admin panel.
+ * Une recargas, obligaciones, pagos y usuarios en una sola timeline.
+ */
+async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde, hasta }) {
+  try {
+    const fuentes = [];
+
+    // ── 1. Recargas ──
+    if (!tipo || tipo === "recarga") {
+      let q = supabase
+        .from("recargas")
+        .select("id, creado_en, usuario_id, monto, referencia_tx, usuarios(nombre, apellido)");
+      if (usuario_id) q = q.eq("usuario_id", usuario_id);
+      if (desde) q = q.gte("creado_en", desde);
+      if (hasta) q = q.lte("creado_en", hasta);
+      const { data, error } = await q;
+      if (error) throw new Error(`Error consultando recargas: ${error.message}`);
+      (data || []).forEach((r) => {
+        fuentes.push({
+          id: r.id,
+          tipo: "recarga",
+          usuario_id: r.usuario_id,
+          usuario_nombre: [r.usuarios?.nombre, r.usuarios?.apellido].filter(Boolean).join(" "),
+          numero_referencia: r.referencia_tx || null,
+          fecha: r.creado_en,
+          monto: Number(r.monto || 0),
+        });
+      });
+    }
+
+    // ── 2. Obligaciones ──
+    if (!tipo || tipo === "obligacion_agregada") {
+      let q = supabase
+        .from("obligaciones")
+        .select("id, creado_en, usuario_id, monto_total, numero_referencia, usuarios(nombre, apellido)");
+      if (usuario_id) q = q.eq("usuario_id", usuario_id);
+      if (desde) q = q.gte("creado_en", desde);
+      if (hasta) q = q.lte("creado_en", hasta);
+      const { data, error } = await q;
+      if (error) throw new Error(`Error consultando obligaciones: ${error.message}`);
+      (data || []).forEach((o) => {
+        fuentes.push({
+          id: o.id,
+          tipo: "obligacion_agregada",
+          usuario_id: o.usuario_id,
+          usuario_nombre: [o.usuarios?.nombre, o.usuarios?.apellido].filter(Boolean).join(" "),
+          numero_referencia: o.numero_referencia || null,
+          fecha: o.creado_en,
+          monto: Number(o.monto_total || 0),
+        });
+      });
+    }
+
+    // ── 3. Pagos ──
+    if (!tipo || tipo === "pago_factura") {
+      let q = supabase
+        .from("pagos")
+        .select("id, creado_en, ejecutado_en, usuario_id, monto_aplicado, referencia_pago, usuarios(nombre, apellido)");
+      if (usuario_id) q = q.eq("usuario_id", usuario_id);
+      if (desde) q = q.gte("creado_en", desde);
+      if (hasta) q = q.lte("creado_en", hasta);
+      const { data, error } = await q;
+      if (error) throw new Error(`Error consultando pagos: ${error.message}`);
+      (data || []).forEach((p) => {
+        fuentes.push({
+          id: p.id,
+          tipo: "pago_factura",
+          usuario_id: p.usuario_id,
+          usuario_nombre: [p.usuarios?.nombre, p.usuarios?.apellido].filter(Boolean).join(" "),
+          numero_referencia: p.referencia_pago || null,
+          fecha: p.ejecutado_en || p.creado_en,
+          monto: Number(p.monto_aplicado || 0),
+        });
+      });
+    }
+
+    // ── 4. Usuarios creados ──
+    if (!tipo || tipo === "usuario_creado") {
+      let q = supabase
+        .from("usuarios")
+        .select("id, creado_en, nombre, apellido");
+      if (usuario_id) q = q.eq("id", usuario_id);
+      if (desde) q = q.gte("creado_en", desde);
+      if (hasta) q = q.lte("creado_en", hasta);
+      const { data, error } = await q;
+      if (error) throw new Error(`Error consultando usuarios: ${error.message}`);
+      (data || []).forEach((u) => {
+        fuentes.push({
+          id: u.id,
+          tipo: "usuario_creado",
+          usuario_id: u.id,
+          usuario_nombre: [u.nombre, u.apellido].filter(Boolean).join(" "),
+          numero_referencia: null,
+          fecha: u.creado_en,
+          monto: 0,
+        });
+      });
+    }
+
+    // ── Ordenar por fecha descendente ──
+    fuentes.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+    // ── Paginar ──
+    const total = fuentes.length;
+    const total_pages = Math.ceil(total / limit);
+    const offset = (page - 1) * limit;
+    const historial = fuentes.slice(offset, offset + limit);
+
+    return success({ historial, total, page, limit, total_pages });
+  } catch (err) {
+    console.error("Error en historialUnificado:", err.message);
+    return errors.internal(err.message);
+  }
+}
+
 module.exports = {
   listarClientes,
   perfilCompletoCliente,
@@ -1539,4 +1655,6 @@ module.exports = {
   obtenerNotificacionesAcciones,
   // Funciones para facturas
   listarTodasLasFacturas,
+  // Historial unificado
+  historialUnificado,
 };

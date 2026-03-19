@@ -5,7 +5,7 @@
 const { Router } = require("express");
 const { authAdmin } = require("../../middleware/auth");
 const { validateQuery, validateBody } = require("../../middleware/validate");
-const { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema } = require("./admin.schema");
+const { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema, queryHistorialSchema } = require("./admin.schema");
 const service = require("./admin.service");
 
 const router = Router();
@@ -80,6 +80,16 @@ router.post("/users/upsert", authAdmin, validateBody(upsertUsuarioAdminSchema), 
 router.put("/users/:id", authAdmin, validateBody(updateUsuarioAdminSchema), async (req, res, next) => {
   try {
     const result = await service.updateUsuarioAdmin(req.params.id, req.validatedBody);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/historial — Historial unificado (recargas, obligaciones, pagos, usuarios)
+router.get("/historial", authAdmin, validateQuery(queryHistorialSchema), async (req, res, next) => {
+  try {
+    const result = await service.historialUnificado(req.validatedQuery);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);

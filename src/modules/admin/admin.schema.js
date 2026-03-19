@@ -41,4 +41,13 @@ const updateUsuarioAdminSchema = z.object({
   activo: z.boolean().optional(),
 });
 
-module.exports = { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema };
+const queryHistorialSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(8),
+  tipo: z.enum(["recarga", "obligacion_agregada", "pago_factura", "usuario_creado"]).optional(),
+  usuario_id: z.string().uuid().optional(),
+  desde: z.string().optional(),
+  hasta: z.string().optional(),
+});
+
+module.exports = { queryClientesSchema, queryPagosHistorialSchema, upsertUsuarioAdminSchema, updateUsuarioAdminSchema, queryHistorialSchema };
