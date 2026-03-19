@@ -425,10 +425,10 @@ async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
   // PASO 2: Obtener TODAS las facturas de TODAS las obligaciones
   const { data: facturasDelMes } = await supabase
     .from('facturas')
-    .select('id, servicio, monto, estado')
+    .select('id, servicio, etiqueta, monto, estado')
     .in('obligacion_id', obligacionIds)
     .eq('estado', 'validada')
-    .order('servicio', { ascending: true });
+    .order('etiqueta', { ascending: true });
   
   if (!facturasDelMes || facturasDelMes.length === 0) {
     console.log(`[NOTIFICACIONES] No hay facturas validadas para usuario ${usuarioId} en periodo ${periodo}`);
@@ -465,7 +465,7 @@ async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
   // PASO 4: Preparar obligaciones - cada factura es una línea individual (sin agrupar)
   // Mostrar cada factura por separado, aunque sea del mismo servicio
   const obligaciones = facturasDelMes.map(factura => ({
-    etiqueta: factura.servicio || 'Servicio',
+    etiqueta: factura.etiqueta || factura.servicio || 'Servicio',
     monto: Number(factura.monto || 0)
   }));
   
