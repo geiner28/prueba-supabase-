@@ -25,9 +25,11 @@ const capturaFacturaSchema = z.object({
 // Validar factura (admin confirma datos)
 const validarFacturaSchema = z.object({
   monto: z.number().positive("Monto debe ser positivo"),
+  servicio: z.string().optional(),
   fecha_vencimiento: z.string().optional(),
   fecha_emision: z.string().optional(),
   referencia_pago: z.string().nullable().optional(),
+  archivo_url: z.string().url().nullable().optional(),
   observaciones_admin: z.string().optional(),
 });
 
