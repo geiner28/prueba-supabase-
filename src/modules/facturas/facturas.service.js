@@ -114,7 +114,7 @@ async function capturaFactura(body, actorTipo = "bot") {
  * Admin valida una factura.
  */
 async function validarFactura(facturaId, body, adminId) {
-  const { monto, servicio, fecha_vencimiento, fecha_emision, referencia_pago, tipo_referencia, archivo_url, observaciones_admin } = body;
+  const { monto, servicio, fecha_vencimiento, fecha_emision, referencia_pago, tipo_referencia, etiqueta, archivo_url, observaciones_admin } = body;
 
   const { data: factura, error: findErr } = await supabase
     .from("facturas")
@@ -133,16 +133,17 @@ async function validarFactura(facturaId, body, adminId) {
   const antes = { ...factura };
   const updateData = {
     monto,
+    servicio,
+    fecha_vencimiento,
+    fecha_emision,
+    referencia_pago,
+    tipo_referencia,
+    etiqueta,
     estado: "validada",
     observaciones_admin: observaciones_admin || null,
     validada_por: adminId,
     validada_en: new Date().toISOString(),
   };
-  if (servicio) updateData.servicio = servicio;
-  if (fecha_vencimiento) updateData.fecha_vencimiento = fecha_vencimiento;
-  if (fecha_emision) updateData.fecha_emision = fecha_emision;
-  if (referencia_pago !== undefined) updateData.referencia_pago = referencia_pago;
-  if (tipo_referencia !== undefined) updateData.tipo_referencia = tipo_referencia;
   if (archivo_url !== undefined) updateData.archivo_url = archivo_url;
 
   const { data: updated, error: updateErr } = await supabase
