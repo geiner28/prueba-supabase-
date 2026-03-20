@@ -303,10 +303,10 @@ async function crearObligacionSiguienteMes(obligacionCompletada) {
     }
 
     // Copiar las facturas de la obligación completada al nuevo periodo
-    // Incluye más campos: etiqueta, archivo_url, tipo_referencia
+    // Incluye más campos: etiqueta, archivo_url, tipo_referencia, referencia_pago
     const { data: facturasAntiguas } = await supabase
       .from("facturas")
-      .select("servicio, monto, origen, etiqueta, archivo_url, tipo_referencia")
+      .select("servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago")
       .eq("obligacion_id", obligacionCompletada.id)
       .not("estado", "eq", "rechazada");
 
@@ -323,6 +323,7 @@ async function crearObligacionSiguienteMes(obligacionCompletada) {
         etiqueta: f.etiqueta || null,
         archivo_url: f.archivo_url || null,
         tipo_referencia: f.tipo_referencia || null,
+        referencia_pago: f.referencia_pago || null,
       }));
 
       const { error: insertErr } = await supabase
