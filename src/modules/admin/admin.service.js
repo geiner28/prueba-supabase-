@@ -187,7 +187,7 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     .filter(p => p.estado === "pagado")
     .reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
 
-  const saldoDisponible = totalRecargasAprobadas - totalPagosPagados;
+  const saldoDisponible = Math.max(0, totalRecargasAprobadas - totalPagosPagados);
 
   // ═══════════════════════════════════════════════════════════════
   // CÁLCULOS POR MES
@@ -467,15 +467,37 @@ async function dashboard(params = {}) {
     facturasNoPageQuery = facturasNoPageQuery.in("usuario_id", usuariosIds);
   }
 
+  // 3.5 Recargas aprobadas GLOBALES (sin filtro de período) — para saldo disponible
+  let recargasGlobalQuery = supabase
+    .from("recargas")
+    .select("monto, usuario_id")
+    .eq("estado", "aprobada");
+  if (usuariosIds.length > 0) {
+    recargasGlobalQuery = recargasGlobalQuery.in("usuario_id", usuariosIds);
+  }
+
+  // 3.6 Pagos completados GLOBALES (sin filtro de período) — para saldo disponible
+  let pagosGlobalQuery = supabase
+    .from("pagos")
+    .select("monto_aplicado, usuario_id")
+    .eq("estado", "pagado");
+  if (usuariosIds.length > 0) {
+    pagosGlobalQuery = pagosGlobalQuery.in("usuario_id", usuariosIds);
+  }
+
   // Ejecutar primero: recargas y facturas (para después filtrar pagos)
   const [
     { data: recargasData },
     { data: facturasNoPagadas },
     { data: todasLasFacturas },
+    { data: recargasGlobalData },
+    { data: pagosGlobalData },
   ] = await Promise.all([
     recargasQuery,
     facturasNoPageQuery,
     todasFacturasQuery,
+    recargasGlobalQuery,
+    pagosGlobalQuery,
   ]);
 
   // 3.4 Pagos completados SOLO de facturas en este período
@@ -504,8 +526,17 @@ async function dashboard(params = {}) {
     0
   );
 
-  // Métrica 3: Saldo Disponible (recargas - pagos)
-  const saldoDisponible = totalRecargasAprobadas - totalPagado;
+  // Métrica 3: Saldo Disponible GLOBAL (todas las recargas - todos los pagos, sin filtro de período)
+  // El saldo es acumulativo como una cuenta bancaria, no depende del mes seleccionado.
+  const totalRecargasGlobal = (recargasGlobalData || []).reduce(
+    (sum, r) => sum + Number(r.monto || 0),
+    0
+  );
+  const totalPagosGlobal = (pagosGlobalData || []).reduce(
+    (sum, p) => sum + Number(p.monto_aplicado || 0),
+    0
+  );
+  const saldoDisponible = Math.max(0, totalRecargasGlobal - totalPagosGlobal);
 
   // Métrica 4: Cantidad de Transacciones (recargas aprobadas)
   const cantidadTransacciones = (recargasData || []).length;
@@ -524,15 +555,15 @@ async function dashboard(params = {}) {
 
   // 5. CALCULAR DISTRIBUCIONES
 
-  // 5.1 Distribución de Saldo por Usuarios (TODOS con saldo > 0, ordenados descendente)
+  // 5.1 Distribución de Saldo por Usuarios — GLOBAL (sin filtro de período)
   const saldoPorUsuario = {};
 
   for (const usuario of usuarios || []) {
-    const sumaRecargas = (recargasData || [])
+    const sumaRecargas = (recargasGlobalData || [])
       .filter((r) => r.usuario_id === usuario.id)
       .reduce((sum, r) => sum + Number(r.monto || 0), 0);
 
-    const sumaPagos = (pagosData || [])
+    const sumaPagos = (pagosGlobalData || [])
       .filter((p) => p.usuario_id === usuario.id)
       .reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
 
