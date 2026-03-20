@@ -18,7 +18,7 @@ async function capturaFactura(body, actorTipo = "bot") {
   const {
     telefono, obligacion_id, servicio, monto,
     fecha_vencimiento, fecha_emision, periodo,
-    origen, archivo_url, referencia_pago, etiqueta,
+    origen, archivo_url, referencia_pago, tipo_referencia, etiqueta,
     extraccion_estado, extraccion_json, extraccion_confianza
   } = body;
 
@@ -57,6 +57,7 @@ async function capturaFactura(body, actorTipo = "bot") {
       fecha_vencimiento: fecha_vencimiento || null,
       monto: monto != null ? monto : null,
       referencia_pago: referencia_pago || null,
+      tipo_referencia: tipo_referencia || null,
       etiqueta: etiqueta || null,
       estado: estadoFactura,
       origen: origen || null,
@@ -113,7 +114,7 @@ async function capturaFactura(body, actorTipo = "bot") {
  * Admin valida una factura.
  */
 async function validarFactura(facturaId, body, adminId) {
-  const { monto, servicio, fecha_vencimiento, fecha_emision, referencia_pago, archivo_url, observaciones_admin } = body;
+  const { monto, servicio, fecha_vencimiento, fecha_emision, referencia_pago, tipo_referencia, archivo_url, observaciones_admin } = body;
 
   const { data: factura, error: findErr } = await supabase
     .from("facturas")
@@ -141,6 +142,7 @@ async function validarFactura(facturaId, body, adminId) {
   if (fecha_vencimiento) updateData.fecha_vencimiento = fecha_vencimiento;
   if (fecha_emision) updateData.fecha_emision = fecha_emision;
   if (referencia_pago !== undefined) updateData.referencia_pago = referencia_pago;
+  if (tipo_referencia !== undefined) updateData.tipo_referencia = tipo_referencia;
   if (archivo_url !== undefined) updateData.archivo_url = archivo_url;
 
   const { data: updated, error: updateErr } = await supabase
@@ -283,6 +285,7 @@ async function listarFacturasPorObligacion(obligacionId) {
   // Mapear para devolver referencia_pago como campo principal
   const facturas = (data || []).map(f => ({
     referencia_pago: f.referencia_pago,
+    tipo_referencia: f.tipo_referencia,
     servicio: f.servicio,
     monto: f.monto,
     estado: f.estado,
