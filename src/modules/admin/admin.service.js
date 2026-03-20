@@ -696,6 +696,22 @@ async function upsertUsuarioAdmin({ telefono, nombre, apellido, correo, direccio
     console.error("[ADMIN-USERS] Error creando ajustes_usuario:", ajustesErr.message);
   }
 
+  // 5. Crear programación de recargas por defecto según el plan
+  const planUsuario = newUser.plan || "control";
+  const esPlanDoble = planUsuario === "tranquilidad" || planUsuario === "respaldo";
+  const { error: progErr } = await supabase
+    .from("programacion_recargas")
+    .insert({
+      usuario_id: newUser.id,
+      cantidad_recargas: esPlanDoble ? 2 : 1,
+      dia_1: 1,
+      dia_2: esPlanDoble ? 15 : null,
+    });
+
+  if (progErr) {
+    console.error("[ADMIN-USERS] Error creando programacion_recargas:", progErr.message);
+  }
+
   return success({
     usuario_id: newUser.id,
     creado: true,
