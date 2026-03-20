@@ -177,7 +177,7 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
   }
 
   // Notificar: pago confirmado
-  await crearNotificacionInterna({
+  const notificacion = await crearNotificacionInterna({
     usuario_id: pago.usuario_id,
     tipo: "pago_confirmado",
     canal: "whatsapp",
@@ -203,6 +203,11 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
     obligacion_estado: obligacionEstado,
     obligacion_completada: obligacionEstado === "completada",
     nueva_obligacion_id: nuevaObligacionId,
+    notificacion: notificacion ? {
+      id: notificacion.id,
+      tipo: notificacion.tipo,
+      mensaje: notificacion.payload?.mensaje || "",
+    } : null,
   });
 }
 
