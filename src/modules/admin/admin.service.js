@@ -627,26 +627,60 @@ async function dashboard(params = {}) {
 
 /**
  * Upsert usuario con campos extendidos (admin-only)
- * - Acepta: telefono, nombre, apellido, correo, direccion, plan
- * - Busca por telefono
+ * - Acepta: usuario_id (opcional), telefono, nombre, apellido, correo, direccion, plan
+ * - Si viene usuario_id: busca por ID (permite cambiar teléfono)
+ * - Si no viene: busca por telefono (comportamiento original)
  * - Si existe: actualiza campos enviados
  * - Si no existe: crea usuario + ajustes automáticos
  */
-async function upsertUsuarioAdmin({ telefono, nombre, apellido, correo, direccion, plan }) {
-  // 1. Buscar usuario existente
-  const { data: existing, error: findErr } = await supabase
-    .from("usuarios")
-    .select("*")
-    .eq("telefono", telefono)
-    .single();
+async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, correo, direccion, plan }) {
+  let existing = null;
 
-  if (findErr && findErr.code !== "PGRST116") {
-    throw new Error(`Error buscando usuario: ${findErr.message}`);
+  if (usuario_id) {
+    // Búsqueda por ID: permite cambiar teléfono
+    const { data, error: findErr } = await supabase
+      .from("usuarios")
+      .select("*")
+      .eq("id", usuario_id)
+      .single();
+
+    if (findErr || !data) {
+      return errors.notFound("Usuario no encontrado con el ID proporcionado");
+    }
+    existing = data;
+
+    // Si el teléfono cambió, verificar que no esté en uso por otro usuario
+    if (telefono && telefono !== existing.telefono) {
+      const { data: duplicado } = await supabase
+        .from("usuarios")
+        .select("id")
+        .eq("telefono", telefono)
+        .neq("id", usuario_id)
+        .single();
+
+      if (duplicado) {
+        return errors.conflict("Ya existe otro usuario con ese número de teléfono");
+      }
+    }
+  } else {
+    // Búsqueda por teléfono (comportamiento original)
+    const { data, error: findErr } = await supabase
+      .from("usuarios")
+      .select("*")
+      .eq("telefono", telefono)
+      .single();
+
+    if (findErr && findErr.code !== "PGRST116") {
+      throw new Error(`Error buscando usuario: ${findErr.message}`);
+    }
+    existing = data;
   }
 
   if (existing) {
     // 2. Actualizar solo campos enviados (no sobrescribir con null)
     const updates = {};
+    // Solo incluir teléfono si se buscó por ID (cambio de teléfono permitido)
+    if (usuario_id && telefono !== undefined && telefono !== existing.telefono) updates.telefono = telefono;
     if (nombre !== undefined) updates.nombre = nombre;
     if (apellido !== undefined) updates.apellido = apellido;
     if (correo !== undefined) updates.correo = correo;
@@ -665,8 +699,8 @@ async function upsertUsuarioAdmin({ telefono, nombre, apellido, correo, direccio
     return success({
       usuario_id: existing.id,
       creado: false,
-      nombre: existing.nombre,
-      telefono: existing.telefono,
+      nombre: updates.nombre || existing.nombre,
+      telefono: updates.telefono || existing.telefono,
       plan: updates.plan || existing.plan,
     });
   }

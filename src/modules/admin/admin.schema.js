@@ -21,7 +21,10 @@ const queryPagosHistorialSchema = z.object({
 });
 
 // Schema para upsert de usuarios por admin (con campos extendidos)
+// Si se envía usuario_id, busca por ID (permite cambiar teléfono).
+// Si no se envía, busca por teléfono (comportamiento original para creación).
 const upsertUsuarioAdminSchema = z.object({
+  usuario_id: z.string().uuid().optional(),
   telefono: z.string().min(7),
   nombre: z.string().optional(),
   apellido: z.string().optional(),
