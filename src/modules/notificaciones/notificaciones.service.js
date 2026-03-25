@@ -171,8 +171,8 @@ async function obtenerPendientesUsuario(telefono) {
  */
 async function obtenerPendientesHoyGlobal() {
   const ahora = new Date();
-  const inicioDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0).toISOString();
-  const finDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 23, 59, 59).toISOString();
+  const inicioDia = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), 0, 0, 0)).toISOString();
+  const finDia = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), 23, 59, 59)).toISOString();
 
   const { data: pendientes, error: queryError } = await supabase
     .from("notificaciones")
@@ -262,7 +262,7 @@ function getNombreMesActual() {
   const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
                  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
   const now = new Date();
-  return `${meses[now.getMonth()]} ${now.getFullYear()}`;
+  return `${meses[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
 }
 
 /**
@@ -272,8 +272,8 @@ function getNombreMesAnterior() {
   const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
                  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
   const now = new Date();
-  const mesAnterior = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  return `${meses[mesAnterior.getMonth()]} ${mesAnterior.getFullYear()}`;
+  const mesAnterior = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  return `${meses[mesAnterior.getUTCMonth()]} ${mesAnterior.getUTCFullYear()}`;
 }
 
 /**
@@ -282,8 +282,8 @@ function getNombreMesAnterior() {
  */
 async function existeNotificacionHoy(usuarioId, tipo) {
   const ahora = new Date();
-  const inicioDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0).toISOString();
-  const finDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 23, 59, 59).toISOString();
+  const inicioDia = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), 0, 0, 0)).toISOString();
+  const finDia = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), 23, 59, 59)).toISOString();
   
   const { count, error } = await supabase
     .from('notificaciones')

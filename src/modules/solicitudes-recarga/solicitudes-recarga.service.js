@@ -868,23 +868,23 @@ async function calcularSaldoUsuario(usuarioId, periodo) {
  */
 function calcularFechaRecordatorioFacturaV2(factura) {
   const hoy = new Date();
-  const anioActual = hoy.getFullYear();
-  const mesActual = hoy.getMonth(); // 0-11
+  const anioActual = hoy.getUTCFullYear();
+  const mesActual = hoy.getUTCMonth(); // 0-11
   
   // Si tiene fecha de vencimiento -> usar vencimiento - 5 días
   if (factura.fecha_vencimiento) {
-    const venc = new Date(factura.fecha_vencimiento);
-    venc.setDate(venc.getDate() - 5);
+    const venc = new Date(factura.fecha_vencimiento + 'T00:00:00Z');
+    venc.setUTCDate(venc.getUTCDate() - 5);
     return venc.toISOString().split('T')[0];
   }
   
   // Si NO tiene vencimiento -> usar día de creado_en + 15 en mes actual
   const creado = new Date(factura.creado_en);
-  let diaCreacion = creado.getDate();
+  let diaCreacion = creado.getUTCDate();
   let diaRecordatorio = diaCreacion + 15;
   
   // Obtener días del mes actual
-  const diasEnMes = new Date(anioActual, mesActual + 1, 0).getDate();
+  const diasEnMes = new Date(Date.UTC(anioActual, mesActual + 1, 0)).getUTCDate();
   
   // Ajustar si pasa del mes
   let mesAplicar = mesActual;
@@ -900,7 +900,7 @@ function calcularFechaRecordatorioFacturaV2(factura) {
     }
     
     // Verificar si sigue siendo mayor (febrero con 28+15=43 -> 13, pero si es 31+15=46 -> 15)
-    const diasSigMes = new Date(anioAplicar, mesAplicar + 1, 0).getDate();
+    const diasSigMes = new Date(Date.UTC(anioAplicar, mesAplicar + 1, 0)).getUTCDate();
     if (diaRecordatorio > diasSigMes) {
       diaRecordatorio = diaRecordatorio - diasSigMes;
       mesAplicar = mesAplicar + 1;
@@ -911,8 +911,8 @@ function calcularFechaRecordatorioFacturaV2(factura) {
     }
   }
   
-  // Construir fecha
-  const fechaRecordatorio = new Date(anioAplicar, mesAplicar, diaRecordatorio);
+  // Construir fecha en UTC
+  const fechaRecordatorio = new Date(Date.UTC(anioAplicar, mesAplicar, diaRecordatorio));
   return fechaRecordatorio.toISOString().split('T')[0];
 }
 
@@ -972,16 +972,13 @@ async function crearOActualizarSolicitud(obligacion, montoPendiente, fechaRecord
   let fechaLimite = new Date().toISOString().split('T')[0]; // Fallback
   
   if (fechaRecordatorioCalculada) {
-    // Parsear fecha en formato YYYY-MM-DD manualmente
-    const [year, month, day] = fechaRecordatorioCalculada.split('-').map(Number);
-    // Crear fecha LOCAL (no UTC) para evitar problemas de timezone
-    const fechaRecordatorioDate = new Date(year, month - 1, day);
-    // Sumar 5 días
-    fechaRecordatorioDate.setDate(fechaRecordatorioDate.getDate() + 5);
+    // Parsear fecha en formato YYYY-MM-DD y sumar 5 días en UTC
+    const fechaRecordatorioDate = new Date(fechaRecordatorioCalculada + 'T00:00:00Z');
+    fechaRecordatorioDate.setUTCDate(fechaRecordatorioDate.getUTCDate() + 5);
     // Formatear de vuelta a YYYY-MM-DD
-    const año = fechaRecordatorioDate.getFullYear();
-    const mes = String(fechaRecordatorioDate.getMonth() + 1).padStart(2, '0');
-    const dia = String(fechaRecordatorioDate.getDate()).padStart(2, '0');
+    const año = fechaRecordatorioDate.getUTCFullYear();
+    const mes = String(fechaRecordatorioDate.getUTCMonth() + 1).padStart(2, '0');
+    const dia = String(fechaRecordatorioDate.getUTCDate()).padStart(2, '0');
     fechaLimite = `${año}-${mes}-${dia}`;
   }
   
@@ -1037,8 +1034,8 @@ async function marcarSolicitudCUMPLIDA(obligacionId) {
  */
 async function detectarPrimeraRecargaDelMes(usuarioId) {
   const ahora = new Date();
-  const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).toISOString();
-  const finMes = new Date(ahora.getFullYear(), ahora.getMonth() + 1, 0, 23, 59, 59).toISOString();
+  const inicioMes = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), 1)).toISOString();
+  const finMes = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth() + 1, 0, 23, 59, 59)).toISOString();
   
   // Prioridad: usar validada_en si existe, sino creado_en
   const { count, error } = await supabase
