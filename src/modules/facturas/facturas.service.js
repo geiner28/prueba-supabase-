@@ -9,7 +9,8 @@ const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
 const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
-const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
+const { crearNotificacionInterna, crearNotificacionRecarga, prepararDatosNotificacion, existeNotificacionHoy } = require("../notificaciones/notificaciones.service");
+const { evaluarObligacion, detectarPrimeraRecargaDelMes } = require("../solicitudes-recarga/solicitudes-recarga.service");
 
 /**
  * Capturar factura (registrar un servicio dentro de una obligación).
@@ -99,6 +100,12 @@ async function capturaFactura(body, actorTipo = "bot") {
     entidad: "facturas",
     entidad_id: factura.id,
     despues: factura,
+  });
+
+  // 9. Evaluar obligación para generar solicitud de recarga y notificación inmediatamente
+  // Se ejecuta en background (sin await) para no bloquear la respuesta al bot
+  evaluarYNotificarObligacion(obligacion_id, obligacion.periodo).catch(err => {
+    console.error("[FACTURAS] Error en evaluación post-creación:", err.message);
   });
 
   return success({
@@ -395,6 +402,37 @@ async function actualizarMontoFactura(facturaId, body) {
     monto_nuevo: updated.monto,
     estado: "extraida",
   });
+}
+
+/**
+ * Evalúa la obligación y genera solicitud de recarga + notificación si aplica.
+ * Se llama automáticamente cada vez que se crea una factura.
+ */
+async function evaluarYNotificarObligacion(obligacionId, periodo) {
+  try {
+    const resultado = await evaluarObligacion(obligacionId);
+
+    if (resultado && resultado.solicitudCargada) {
+      const esPrimeraRecarga = await detectarPrimeraRecargaDelMes(resultado.usuarioId);
+      const tipoNotificacion = esPrimeraRecarga
+        ? 'solicitud_recarga_inicio_mes'
+        : 'solicitud_recarga';
+
+      const yaEnviadaHoy = await existeNotificacionHoy(resultado.usuarioId, tipoNotificacion);
+
+      if (!yaEnviadaHoy) {
+        const datos = await prepararDatosNotificacion(resultado.usuarioId, periodo, esPrimeraRecarga);
+        if (datos) {
+          await crearNotificacionRecarga(resultado.usuarioId, tipoNotificacion, datos);
+          console.log(`[FACTURAS] Notificación ${tipoNotificacion} creada para usuario ${resultado.usuarioId}`);
+        }
+      } else {
+        console.log(`[FACTURAS] Notificación ${tipoNotificacion} ya existe hoy para usuario ${resultado.usuarioId}, omitiendo`);
+      }
+    }
+  } catch (err) {
+    console.error("[FACTURAS] Error en evaluarYNotificarObligacion:", err.message);
+  }
 }
 
 module.exports = {

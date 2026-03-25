@@ -245,10 +245,10 @@ function initJobs() {
 
   console.log("[JOBS] Inicializando jobs programados...");
 
-  // JOB 1: Evaluación de recargas (9:00 AM) - NUEVO
-  const jobRecargas = cron.schedule("0 9 * * *", async () => {
+  // JOB 1: Evaluación de recargas (cada 30 minutos)
+  const jobRecargas = cron.schedule("*/30 * * * *", async () => {
     console.log("[JOBS] ════════════════════════════════════════");
-    console.log("[JOBS] EJECUTANDO JOB DE RECARGAS - 9:00 AM");
+    console.log("[JOBS] EJECUTANDO JOB DE RECARGAS - CADA 30 MIN");
     console.log("[JOBS] ════════════════════════════════════════");
     try {
       const result = await jobEvaluacionRecargas();
@@ -275,9 +275,10 @@ function initJobs() {
   // Este job ya no es necesario ya que jobEvaluacionRecargas hace todo
   // Se mantiene por compatibilidad si hay lógica adicional
 
-  console.log("[JOBS] ✓ Job de evaluación de recargas programado para 9:00 AM");
+  console.log("[JOBS] ✓ Job de evaluación de recargas programado cada 30 minutos");
   console.log("[JOBS] ✓ Job de inactividad programado cada 6 horas");
   console.log("[JOBS] ✓ El job evaluará obligaciones, calculará montos y creará notificaciones");
+  console.log("[JOBS] ✓ También se evalúa en tiempo real al crear cada factura");
   console.log("[JOBS] Jobs inicializados correctamente");
 
   return {
