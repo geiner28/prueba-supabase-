@@ -59,4 +59,14 @@ router.put("/:id/aproximar", authBotOrAdmin, validateBody(actualizarMontoFactura
   }
 });
 
+// DELETE /api/facturas/:id — Eliminar factura (sin importar el estado)
+router.delete("/:id", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.eliminarFactura(req.params.id, { actor: req.actorTipo });
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

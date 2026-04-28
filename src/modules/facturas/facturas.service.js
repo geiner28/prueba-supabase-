@@ -435,6 +435,62 @@ async function evaluarYNotificarObligacion(obligacionId, periodo) {
   }
 }
 
+/**
+ * Eliminar factura sin importar su estado.
+ * - Borra primero los pagos asociados (FK ON DELETE RESTRICT en pagos.factura_id).
+ * - Las revisiones_admin se borran por CASCADE.
+ * - Recalcula contadores de la obligación al final.
+ */
+async function eliminarFactura(facturaId, { actor = "admin" } = {}) {
+  const { data: factura, error: findErr } = await supabase
+    .from("facturas")
+    .select("*")
+    .eq("id", facturaId)
+    .single();
+
+  if (findErr || !factura) return errors.notFound("Factura no encontrada");
+
+  // 1. Borrar pagos asociados (FK RESTRICT impide borrar la factura si existen)
+  const { data: pagosBorrados, error: delPagosErr } = await supabase
+    .from("pagos")
+    .delete()
+    .eq("factura_id", facturaId)
+    .select("id");
+  if (delPagosErr) throw new Error(`Error eliminando pagos asociados: ${delPagosErr.message}`);
+
+  // 2. Borrar la factura (revisiones_admin caen por CASCADE)
+  const { error: delErr } = await supabase
+    .from("facturas")
+    .delete()
+    .eq("id", facturaId);
+  if (delErr) throw new Error(`Error eliminando factura: ${delErr.message}`);
+
+  // 3. Recalcular contadores de la obligación
+  if (factura.obligacion_id) {
+    try {
+      await actualizarContadoresObligacion(factura.obligacion_id);
+    } catch (e) {
+      console.error("[FACTURAS] Error recalculando contadores tras eliminar:", e.message);
+    }
+  }
+
+  await registrarAuditLog({
+    actor_tipo: actor,
+    accion: "eliminar_factura",
+    entidad: "facturas",
+    entidad_id: facturaId,
+    antes: { ...factura, pagos_eliminados: (pagosBorrados || []).length },
+  });
+
+  return success({
+    factura_id: facturaId,
+    eliminada: true,
+    estado_anterior: factura.estado,
+    pagos_eliminados: (pagosBorrados || []).length,
+    obligacion_id: factura.obligacion_id,
+  });
+}
+
 module.exports = {
   capturaFactura,
   validarFactura,
@@ -442,4 +498,5 @@ module.exports = {
   actualizarMontoFactura,
   listarFacturasPorObligacion,
   actualizarContadoresObligacion,
+  eliminarFactura,
 };

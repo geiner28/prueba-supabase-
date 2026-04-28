@@ -79,6 +79,7 @@ Todas las respuestas del API siguen exactamente este formato, sin excepciones:
 |---|--------|----------|----------|
 | 6 | `POST` | `/api/facturas/captura` | Registra una factura extraída por el bot (acepta campos null cuando la extracción es incompleta) |
 | 7 | `GET` | `/api/facturas/obligacion/:id` | Lista todas las facturas de una obligación con todos sus campos y estados |
+| 7a | `DELETE` | `/api/facturas/:id` | 🆕 Elimina una factura sin importar su estado (cascada en pagos asociados) |
 
 ### Recargas (Depósitos de Dinero)
 | # | Método | Endpoint | Qué hace |
@@ -2332,3 +2333,57 @@ DELETE /api/obligaciones/86a0c709-3ca9-41bc-9106-226cac7cf4ba?force=true
 
 ### Auditoría
 Cada eliminación se registra en `audit_log` con `accion = "eliminar_obligacion"` y snapshot completo de la obligación + cantidad de facturas eliminadas.
+
+---
+
+## 🆕 7a. `DELETE /api/facturas/:id` — Eliminar factura
+
+### ¿Qué hace?
+Elimina una factura **sin importar su estado** (extraida, en_revision, validada, pagada o rechazada). Antes de borrar la factura, elimina automáticamente los pagos asociados (la FK `pagos.factura_id` es `ON DELETE RESTRICT`). Las revisiones_admin asociadas se eliminan por CASCADE. Tras el borrado, recalcula los contadores de la obligación contenedora.
+
+### ¿Cuándo usarlo?
+- Limpieza administrativa de facturas duplicadas o incorrectas.
+- Corrección de errores de captura.
+- Borrado forzado durante pruebas.
+
+> ⚠️ **Atención:** Si la factura tiene pagos confirmados, esos pagos también se eliminan. Esto puede afectar el saldo disponible del usuario. Úselo con criterio.
+
+### Auth
+```
+x-admin-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+> Solo admin.
+
+### Ejemplo
+```
+DELETE /api/facturas/63dd4b3b-9e6c-43b1-a6b6-ff5858554733
+```
+
+**Respuesta exitosa (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "factura_id": "63dd4b3b-9e6c-43b1-a6b6-ff5858554733",
+    "eliminada": true,
+    "estado_anterior": "pagada",
+    "pagos_eliminados": 1,
+    "obligacion_id": "86a0c709-3ca9-41bc-9106-226cac7cf4ba"
+  },
+  "error": null
+}
+```
+
+| Campo respuesta | Significado |
+|-----------------|-------------|
+| `estado_anterior` | Estado en que se encontraba la factura antes de borrarla |
+| `pagos_eliminados` | Cantidad de pagos asociados que se borraron en cascada |
+| `obligacion_id` | Obligación a la que pertenecía (sus contadores se recalculan automáticamente) |
+
+### Errores posibles
+```json
+{ "code": "NOT_FOUND", "message": "Factura no encontrada" }
+```
+
+### Auditoría
+Cada eliminación queda registrada en `audit_log` con `accion = "eliminar_factura"`, snapshot completo de la factura y la cantidad de pagos eliminados.
