@@ -64,6 +64,7 @@ Todas las respuestas del API siguen exactamente este formato, sin excepciones:
 |---|--------|----------|----------|
 | 1 | `POST` | `/api/users/upsert` | Registra un usuario nuevo o actualiza uno existente usando su teléfono como clave única |
 | 2 | `PUT` | `/api/users/plan` | Asigna o cambia el plan del usuario (control, tranquilidad, respaldo) |
+| 2a | `DELETE` | `/api/users/:id` o `/api/users?telefono=XXX` | 🆕 Elimina usuario (soft delete por default; `?hard=true` borra físicamente) |
 
 ### Obligaciones (Compromisos Mensuales)
 | # | Método | Endpoint | Qué hace |
@@ -71,6 +72,7 @@ Todas las respuestas del API siguen exactamente este formato, sin excepciones:
 | 3 | `POST` | `/api/obligaciones` | Crea el compromiso mensual que agrupa todas las facturas de un periodo |
 | 4 | `GET` | `/api/obligaciones?telefono=XXX` | Lista todas las obligaciones del usuario con sus facturas y progreso de pago |
 | 5 | `GET` | `/api/obligaciones/:id` | Muestra el detalle completo de una obligación específica incluyendo datos del usuario |
+| 5a | `DELETE` | `/api/obligaciones/:id` | 🆕 Elimina obligación (bloqueado si hay facturas pagadas/validadas; `?force=true` cascada) |
 
 ### Facturas
 | # | Método | Endpoint | Qué hace |
@@ -2166,3 +2168,167 @@ en_proceso → pagado | fallido
 ```
 pendiente → resuelta | descartada
 ```
+
+---
+
+## 🆕 2a. `DELETE /api/users/:id` (o `/api/users?telefono=XXX`) — Eliminar usuario
+
+### ¿Qué hace?
+Elimina un usuario del sistema. Por defecto realiza **soft delete** (marca `activo=false` preservando todo el historial). Con `?hard=true` realiza **hard delete** físico, lo cual elimina en cascada ajustes, obligaciones, facturas, recargas, pagos, revisiones y solicitudes_recarga (las notificaciones quedan con `usuario_id=NULL` para histórico).
+
+### ¿Cuándo usarlo?
+- Soft delete: cuando un usuario se da de baja pero se desea conservar histórico contable.
+- Hard delete: solo para depuración / GDPR / pruebas. **No recomendado en producción** si hay datos financieros.
+
+### Auth
+```
+x-admin-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+> Solo admin. Bot key NO autoriza este endpoint.
+
+### Variantes
+- `DELETE /api/users/:id` — borra por UUID
+- `DELETE /api/users?telefono=573046757626` — borra por teléfono
+
+### Query params
+
+| Param | Tipo | Default | Descripción |
+|-------|------|---------|-------------|
+| `hard` | `boolean` | `false` | Si `true`, borra físicamente la fila (cascada) |
+| `force` | `boolean` | `false` | Si `true`, ignora restricciones (obligaciones activas / pagos confirmados) |
+
+### Reglas / Restricciones
+
+| Caso | Comportamiento |
+|------|----------------|
+| Soft delete sobre usuario ya inactivo | Devuelve 200 con mensaje "ya estaba inactivo" (idempotente) |
+| Soft/Hard con obligaciones `activa` o `en_progreso` | **Bloqueado** con `INVALID_STATE_TRANSITION`. Usar `?force=true` para forzar |
+| Hard delete con pagos en estado `pagado`/`en_proceso` | **Bloqueado** por integridad financiera. Usar `?force=true` para forzar |
+
+### Ejemplo — Soft delete por teléfono
+```
+DELETE /api/users?telefono=573046757626
+```
+
+**Respuesta (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "usuario_id": "49f3c602-80c8-4c59-9ee6-a005bbb86f08",
+    "telefono": "573046757626",
+    "modo": "soft",
+    "eliminado": true,
+    "activo": false
+  },
+  "error": null
+}
+```
+
+### Ejemplo — Hard delete forzado
+```
+DELETE /api/users/49f3c602-80c8-4c59-9ee6-a005bbb86f08?hard=true&force=true
+```
+
+**Respuesta (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "usuario_id": "49f3c602-80c8-4c59-9ee6-a005bbb86f08",
+    "telefono": "573046757626",
+    "modo": "hard",
+    "eliminado": true
+  },
+  "error": null
+}
+```
+
+### Errores posibles
+```json
+{ "code": "NOT_FOUND", "message": "Usuario no encontrado" }
+{ "code": "INVALID_STATE_TRANSITION", "message": "El usuario tiene 2 obligación(es) activa(s)/en progreso. Use ?force=true para eliminar de todos modos." }
+{ "code": "INVALID_STATE_TRANSITION", "message": "El usuario tiene 5 pago(s) confirmado(s). Hard delete bloqueado por integridad financiera. Use ?force=true para forzar." }
+{ "code": "BAD_REQUEST", "message": "Debe indicar id o telefono" }
+```
+
+### Auditoría
+Cada operación queda registrada en `audit_log` con `accion = "soft_delete_usuario"` o `"hard_delete_usuario"`, incluyendo el snapshot del usuario antes del cambio.
+
+---
+
+## 🆕 5a. `DELETE /api/obligaciones/:id` — Eliminar obligación
+
+### ¿Qué hace?
+Elimina una obligación (compromiso mensual). Es **hard delete** con restricciones estrictas para proteger datos financieros. Las solicitudes de recarga asociadas se eliminan automáticamente por CASCADE en BD; las facturas requieren cascada explícita con `?force=true`.
+
+### ¿Cuándo usarlo?
+- Para corregir obligaciones creadas por error que aún no tienen pagos.
+- Para limpiar periodos de prueba.
+
+### Auth
+```
+x-admin-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+```
+> Solo admin.
+
+### Query params
+
+| Param | Tipo | Default | Descripción |
+|-------|------|---------|-------------|
+| `force` | `boolean` | `false` | Si `true`, elimina en cascada las facturas no protegidas |
+
+### Reglas / Restricciones
+
+| Caso | Comportamiento |
+|------|----------------|
+| Existe ≥1 factura en estado `pagada` o `validada` | **Bloqueado SIEMPRE** (ni siquiera `force=true` lo permite) — protege integridad contable |
+| Hay facturas en otros estados (`extraida`, `en_revision`, `rechazada`) y `force=false` | Bloqueado con sugerencia de usar `?force=true` |
+| `force=true` y solo facturas no protegidas | Borra primero las facturas, luego la obligación |
+| Sin facturas asociadas | Elimina directamente |
+
+### Ejemplo — Sin facturas
+```
+DELETE /api/obligaciones/86a0c709-3ca9-41bc-9106-226cac7cf4ba
+```
+
+**Respuesta (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "obligacion_id": "86a0c709-3ca9-41bc-9106-226cac7cf4ba",
+    "eliminada": true,
+    "facturas_eliminadas": 0
+  },
+  "error": null
+}
+```
+
+### Ejemplo — Con facturas (force)
+```
+DELETE /api/obligaciones/86a0c709-3ca9-41bc-9106-226cac7cf4ba?force=true
+```
+
+**Respuesta (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "obligacion_id": "86a0c709-3ca9-41bc-9106-226cac7cf4ba",
+    "eliminada": true,
+    "facturas_eliminadas": 3
+  },
+  "error": null
+}
+```
+
+### Errores posibles
+```json
+{ "code": "NOT_FOUND", "message": "Obligación no encontrada" }
+{ "code": "INVALID_STATE_TRANSITION", "message": "No se puede eliminar: la obligación tiene 1 factura(s) pagada(s)/validada(s). Esta acción está bloqueada por integridad financiera." }
+{ "code": "INVALID_STATE_TRANSITION", "message": "La obligación tiene 3 factura(s) asociada(s). Use ?force=true para eliminarlas en cascada." }
+```
+
+### Auditoría
+Cada eliminación se registra en `audit_log` con `accion = "eliminar_obligacion"` y snapshot completo de la obligación + cantidad de facturas eliminadas.

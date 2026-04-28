@@ -200,10 +200,71 @@ async function verificarCompletarObligacion(obligacionId) {
   return updateData.estado;
 }
 
+/**
+ * Eliminar obligación (hard delete).
+ * - Bloqueado si hay facturas en estado 'pagada' o 'validada' (riesgo financiero/legal).
+ * - Por default también bloqueado si hay facturas asociadas.
+ * - Con force=true: elimina facturas no pagadas/validadas en cascada y luego la obligación.
+ *   Solicitudes_recarga se eliminan por CASCADE.
+ *   Facturas tienen FK ON DELETE RESTRICT, por eso se borran manualmente.
+ */
+async function eliminarObligacion(obligacionId, { force = false, actor = "admin" } = {}) {
+  const { data: obl, error: findErr } = await supabase
+    .from("obligaciones")
+    .select("*")
+    .eq("id", obligacionId)
+    .single();
+  if (findErr || !obl) return errors.notFound("Obligación no encontrada");
+
+  const { data: facturas, error: facErr } = await supabase
+    .from("facturas")
+    .select("id, estado")
+    .eq("obligacion_id", obligacionId);
+  if (facErr) throw new Error(`Error consultando facturas: ${facErr.message}`);
+
+  const protegidas = (facturas || []).filter(f => f.estado === "pagada" || f.estado === "validada");
+  if (protegidas.length > 0) {
+    return errors.invalidTransition(
+      `No se puede eliminar: la obligación tiene ${protegidas.length} factura(s) pagada(s)/validada(s). Esta acción está bloqueada por integridad financiera.`
+    );
+  }
+
+  if ((facturas || []).length > 0 && !force) {
+    return errors.invalidTransition(
+      `La obligación tiene ${facturas.length} factura(s) asociada(s). Use ?force=true para eliminarlas en cascada.`
+    );
+  }
+
+  // force=true → borrar facturas no protegidas (todas, ya validamos arriba que no hay pagadas/validadas)
+  if ((facturas || []).length > 0) {
+    const ids = facturas.map(f => f.id);
+    const { error: delFacErr } = await supabase.from("facturas").delete().in("id", ids);
+    if (delFacErr) throw new Error(`Error eliminando facturas: ${delFacErr.message}`);
+  }
+
+  const { error: delErr } = await supabase.from("obligaciones").delete().eq("id", obligacionId);
+  if (delErr) throw new Error(`Error eliminando obligación: ${delErr.message}`);
+
+  await registrarAuditLog({
+    actor_tipo: actor,
+    accion: "eliminar_obligacion",
+    entidad: "obligaciones",
+    entidad_id: obligacionId,
+    antes: { ...obl, facturas_eliminadas: (facturas || []).length },
+  });
+
+  return success({
+    obligacion_id: obligacionId,
+    eliminada: true,
+    facturas_eliminadas: (facturas || []).length,
+  });
+}
+
 module.exports = {
   crearObligacion,
   listarObligaciones,
   obtenerObligacion,
   actualizarObligacion,
   verificarCompletarObligacion,
+  eliminarObligacion,
 };

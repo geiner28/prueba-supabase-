@@ -49,4 +49,15 @@ router.put("/:id", authAdmin, validateBody(updateObligacionSchema), async (req, 
   }
 });
 
+// DELETE /api/obligaciones/:id?force=true — Eliminar obligación (hard delete con restricciones)
+router.delete("/:id", authAdmin, async (req, res, next) => {
+  try {
+    const force = req.query.force === "true";
+    const result = await service.eliminarObligacion(req.params.id, { force, actor: req.actorTipo });
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

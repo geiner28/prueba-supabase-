@@ -53,4 +53,33 @@ router.get("/by-telefono/", authAdmin, async (req, res, next) => {
   }
 });
 
+// DELETE /api/users/:id?hard=true&force=true — Eliminar usuario (soft por default)
+// :id puede ser UUID. Alternativa: DELETE /api/users?telefono=XXX (sin :id)
+router.delete("/:id", authAdmin, async (req, res, next) => {
+  try {
+    const hard = req.query.hard === "true";
+    const force = req.query.force === "true";
+    const result = await usersService.deleteUser({ id: req.params.id, hard, force, actor: req.actorTipo });
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/users?telefono=XXX&hard=true&force=true — Eliminar por teléfono
+router.delete("/", authAdmin, async (req, res, next) => {
+  try {
+    const { telefono } = req.query;
+    if (!telefono) {
+      return res.status(400).json({ ok: false, data: null, error: { code: "BAD_REQUEST", message: "Query param 'telefono' requerido (o use DELETE /api/users/:id)" } });
+    }
+    const hard = req.query.hard === "true";
+    const force = req.query.force === "true";
+    const result = await usersService.deleteUser({ telefono, hard, force, actor: req.actorTipo });
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

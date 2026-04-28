@@ -3,6 +3,7 @@
 // ===========================================
 const supabase = require("../../config/supabase");
 const { success, errors } = require("../../utils/response");
+const { registrarAuditLog } = require("../../utils/auditLog");
 
 /**
  * Listar usuarios con paginación y búsqueda.
@@ -162,4 +163,106 @@ async function getUserByTelefono(telefono) {
   return success(data);
 }
 
-module.exports = { listUsers, upsertUser, updateUserPlan, getUserByTelefono };
+/**
+ * Eliminar usuario.
+ * - soft (default): marca activo=false (preserva historial).
+ * - hard: borra fila usuarios; CASCADE elimina ajustes, obligaciones, facturas,
+ *   recargas, pagos, revisiones y solicitudes_recarga; notificaciones quedan con
+ *   usuario_id=NULL. Bloqueado si hay obligaciones activas/en_progreso salvo force=true.
+ */
+async function deleteUser({ id, telefono, hard = false, force = false, actor }) {
+  // Resolver usuario por id o telefono
+  let query = supabase.from("usuarios").select("*");
+  if (id) query = query.eq("id", id);
+  else if (telefono) query = query.eq("telefono", telefono);
+  else return errors.badRequest("Debe indicar id o telefono");
+
+  const { data: usuario, error: findErr } = await query.single();
+  if (findErr || !usuario) return errors.notFound("Usuario no encontrado");
+
+  // Validar obligaciones activas/en_progreso
+  const { data: oblsActivas, error: oblsErr } = await supabase
+    .from("obligaciones")
+    .select("id, estado")
+    .eq("usuario_id", usuario.id)
+    .in("estado", ["activa", "en_progreso"]);
+
+  if (oblsErr) throw new Error(`Error verificando obligaciones: ${oblsErr.message}`);
+
+  if (oblsActivas && oblsActivas.length > 0 && !force) {
+    return errors.invalidTransition(
+      `El usuario tiene ${oblsActivas.length} obligación(es) activa(s)/en progreso. Use ?force=true para eliminar de todos modos.`
+    );
+  }
+
+  if (hard) {
+    // Verificar pagos confirmados (datos financieros) antes de borrar definitivamente
+    const { count: pagosCount, error: pagosErr } = await supabase
+      .from("pagos")
+      .select("id", { count: "exact", head: true })
+      .eq("usuario_id", usuario.id)
+      .in("estado", ["pagado", "en_proceso"]);
+    if (pagosErr) throw new Error(`Error verificando pagos: ${pagosErr.message}`);
+    if ((pagosCount || 0) > 0 && !force) {
+      return errors.invalidTransition(
+        `El usuario tiene ${pagosCount} pago(s) confirmado(s). Hard delete bloqueado por integridad financiera. Use ?force=true para forzar.`
+      );
+    }
+
+    const { error: delErr } = await supabase.from("usuarios").delete().eq("id", usuario.id);
+    if (delErr) throw new Error(`Error eliminando usuario: ${delErr.message}`);
+
+    await registrarAuditLog({
+      actor_tipo: actor || "admin",
+      accion: "hard_delete_usuario",
+      entidad: "usuarios",
+      entidad_id: usuario.id,
+      antes: usuario,
+    });
+
+    return success({
+      usuario_id: usuario.id,
+      telefono: usuario.telefono,
+      modo: "hard",
+      eliminado: true,
+    });
+  }
+
+  // Soft delete
+  if (usuario.activo === false) {
+    return success({
+      usuario_id: usuario.id,
+      telefono: usuario.telefono,
+      modo: "soft",
+      eliminado: true,
+      mensaje: "El usuario ya estaba inactivo",
+    });
+  }
+
+  const { data: updated, error: updErr } = await supabase
+    .from("usuarios")
+    .update({ activo: false })
+    .eq("id", usuario.id)
+    .select()
+    .single();
+  if (updErr) throw new Error(`Error desactivando usuario: ${updErr.message}`);
+
+  await registrarAuditLog({
+    actor_tipo: actor || "admin",
+    accion: "soft_delete_usuario",
+    entidad: "usuarios",
+    entidad_id: usuario.id,
+    antes: usuario,
+    despues: updated,
+  });
+
+  return success({
+    usuario_id: usuario.id,
+    telefono: usuario.telefono,
+    modo: "soft",
+    eliminado: true,
+    activo: false,
+  });
+}
+
+module.exports = { listUsers, upsertUser, updateUserPlan, getUserByTelefono, deleteUser };

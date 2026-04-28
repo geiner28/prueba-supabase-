@@ -20,4 +20,8 @@ const queryObligacionesSchema = z.object({
   estado: z.string().optional(),
 });
 
-module.exports = { createObligacionSchema, updateObligacionSchema, queryObligacionesSchema };
+const deleteObligacionQuerySchema = z.object({
+  force: z.union([z.literal("true"), z.literal("false")]).optional(),
+});
+
+module.exports = { createObligacionSchema, updateObligacionSchema, queryObligacionesSchema, deleteObligacionQuerySchema };
