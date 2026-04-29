@@ -18,8 +18,8 @@ const { evaluarObligacion, detectarPrimeraRecargaDelMes } = require("../solicitu
 async function capturaFactura(body, actorTipo = "bot") {
   const {
     telefono, obligacion_id, servicio, monto,
-    fecha_vencimiento, fecha_emision, periodo,
-    origen, archivo_url, referencia_pago, tipo_referencia, etiqueta,
+    fecha_vencimiento, fecha_emision, fecha_recordatorio, periodo,
+    origen, archivo_url, pagina_pago, referencia_pago, tipo_referencia, etiqueta, grupo,
     extraccion_estado, extraccion_json, extraccion_confianza
   } = body;
 
@@ -42,10 +42,12 @@ async function capturaFactura(body, actorTipo = "bot") {
   // 3. Normalizar periodo (usar el de la obligación si no se envía)
   const periodoNorm = normalizarPeriodo(periodo || obligacion.periodo);
 
-  // 4. Determinar si requiere revisión
+  // 4. Determinar si requiere revisión manual del admin
   const requiereRevision = ["dudosa", "fallida"].includes(extraccion_estado) || monto == null;
-  const estadoFactura = requiereRevision ? "en_revision" : "extraida";
 
+  // En el nuevo modelo TODA factura nueva nace con:
+  //   estado = 'pendiente'        (visible al usuario)
+  //   validacion_estado = 'sin_validar' (proceso admin pendiente)
   // 5. Crear factura
   const { data: factura, error: insertErr } = await supabase
     .from("facturas")
@@ -56,13 +58,17 @@ async function capturaFactura(body, actorTipo = "bot") {
       periodo: periodoNorm,
       fecha_emision: fecha_emision || null,
       fecha_vencimiento: fecha_vencimiento || null,
+      fecha_recordatorio: fecha_recordatorio || null,
       monto: monto != null ? monto : null,
       referencia_pago: referencia_pago || null,
       tipo_referencia: tipo_referencia || null,
       etiqueta: etiqueta || null,
-      estado: estadoFactura,
+      grupo: grupo || obligacion.grupo || null,
+      estado: "pendiente",
+      validacion_estado: "sin_validar",
       origen: origen || null,
       archivo_url: archivo_url || null,
+      pagina_pago: pagina_pago || null,
       extraccion_estado: extraccion_estado || "ok",
       extraccion_json: extraccion_json || null,
       extraccion_confianza: extraccion_confianza != null ? extraccion_confianza : null,
@@ -102,8 +108,7 @@ async function capturaFactura(body, actorTipo = "bot") {
     despues: factura,
   });
 
-  // 9. Evaluar obligación para generar solicitud de recarga y notificación inmediatamente
-  // Se ejecuta en background (sin await) para no bloquear la respuesta al bot
+  // 9. Evaluar obligación para generar solicitud de recarga y notificación
   evaluarYNotificarObligacion(obligacion_id, obligacion.periodo).catch(err => {
     console.error("[FACTURAS] Error en evaluación post-creación:", err.message);
   });
@@ -112,16 +117,22 @@ async function capturaFactura(body, actorTipo = "bot") {
     factura_id: factura.id,
     servicio,
     monto,
-    estado: estadoFactura,
+    estado: factura.estado,
+    validacion_estado: factura.validacion_estado,
     requiere_revision: requiereRevision,
   }, 201);
 }
 
 /**
  * Admin valida una factura.
+ * - Cambia validacion_estado='validada' (NO toca `estado` visible al usuario).
+ * - Permite editar campos opcionales en la misma operación.
+ * - NO envía mensaje al usuario (solo se le notifica recarga / pago / cumplimiento).
  */
 async function validarFactura(facturaId, body, adminId) {
-  const { monto, servicio, fecha_vencimiento, fecha_emision, referencia_pago, tipo_referencia, etiqueta, archivo_url, observaciones_admin } = body;
+  const { monto, servicio, fecha_vencimiento, fecha_emision, fecha_recordatorio,
+          referencia_pago, tipo_referencia, etiqueta, archivo_url, pagina_pago,
+          observaciones_admin, periodo, grupo } = body;
 
   const { data: factura, error: findErr } = await supabase
     .from("facturas")
@@ -131,27 +142,35 @@ async function validarFactura(facturaId, body, adminId) {
 
   if (findErr || !factura) return errors.notFound("Factura no encontrada");
 
-  if (!isValidTransition("facturas", factura.estado, "validada")) {
+  if (!isValidTransition("facturas_validacion", factura.validacion_estado, "validada")) {
     return errors.invalidTransition(
-      `No se puede validar factura en estado '${factura.estado}'. Debe estar en 'en_revision' o 'extraida'.`
+      `No se puede validar factura con validacion_estado='${factura.validacion_estado}'.`
     );
   }
 
   const antes = { ...factura };
   const updateData = {
-    monto,
-    servicio,
-    fecha_vencimiento,
-    fecha_emision,
-    referencia_pago,
-    tipo_referencia,
-    etiqueta,
-    estado: "validada",
-    observaciones_admin: observaciones_admin || null,
+    validacion_estado: "validada",
     validada_por: adminId,
     validada_en: new Date().toISOString(),
   };
+  if (monto !== undefined) updateData.monto = monto;
+  if (servicio !== undefined) updateData.servicio = servicio;
+  if (fecha_vencimiento !== undefined) updateData.fecha_vencimiento = fecha_vencimiento;
+  if (fecha_emision !== undefined) updateData.fecha_emision = fecha_emision;
+  if (fecha_recordatorio !== undefined) updateData.fecha_recordatorio = fecha_recordatorio;
+  if (referencia_pago !== undefined) updateData.referencia_pago = referencia_pago;
+  if (tipo_referencia !== undefined) updateData.tipo_referencia = tipo_referencia;
+  if (etiqueta !== undefined) updateData.etiqueta = etiqueta;
   if (archivo_url !== undefined) updateData.archivo_url = archivo_url;
+  if (pagina_pago !== undefined) updateData.pagina_pago = pagina_pago;
+  if (observaciones_admin !== undefined) updateData.observaciones_admin = observaciones_admin;
+  if (grupo !== undefined) updateData.grupo = grupo;
+  if (periodo) {
+    const periodoNorm = normalizarPeriodo(periodo);
+    if (!periodoNorm) return errors.validation("Periodo inválido");
+    updateData.periodo = periodoNorm;
+  }
 
   const { data: updated, error: updateErr } = await supabase
     .from("facturas")
@@ -180,33 +199,20 @@ async function validarFactura(facturaId, body, adminId) {
     antes, despues: updated,
   });
 
-  // Notificar al usuario
-  const notificacion = await crearNotificacionInterna({
-    usuario_id: factura.usuario_id,
-    tipo: "factura_validada",
-    canal: "whatsapp",
-    payload: {
-      factura_id: facturaId,
-      servicio: updated.servicio,
-      monto,
-      mensaje: `Tu factura de ${updated.servicio} por $${Number(monto).toLocaleString()} ha sido validada y está lista para pago.`,
-    },
-  });
+  // No se envía notificación al usuario: la validación es interna del admin.
 
   return success({
     factura_id: facturaId,
     servicio: updated.servicio,
-    estado: "validada",
-    notificacion: notificacion ? {
-      id: notificacion.id,
-      tipo: notificacion.tipo,
-      mensaje: notificacion.payload?.mensaje || "",
-    } : null,
+    estado: updated.estado,
+    validacion_estado: updated.validacion_estado,
   });
 }
 
 /**
  * Admin rechaza una factura.
+ * - Cambia validacion_estado='rechazada' (NO toca `estado` visible al usuario).
+ * - NO envía mensaje al usuario.
  */
 async function rechazarFactura(facturaId, body, adminId) {
   const { motivo_rechazo } = body;
@@ -219,9 +225,9 @@ async function rechazarFactura(facturaId, body, adminId) {
 
   if (findErr || !factura) return errors.notFound("Factura no encontrada");
 
-  if (!isValidTransition("facturas", factura.estado, "rechazada")) {
+  if (!isValidTransition("facturas_validacion", factura.validacion_estado, "rechazada")) {
     return errors.invalidTransition(
-      `No se puede rechazar factura en estado '${factura.estado}'.`
+      `No se puede rechazar factura con validacion_estado='${factura.validacion_estado}'.`
     );
   }
 
@@ -229,7 +235,7 @@ async function rechazarFactura(facturaId, body, adminId) {
   const { data: updated, error: updateErr } = await supabase
     .from("facturas")
     .update({
-      estado: "rechazada",
+      validacion_estado: "rechazada",
       motivo_rechazo,
       validada_por: adminId,
       validada_en: new Date().toISOString(),
@@ -256,27 +262,9 @@ async function rechazarFactura(facturaId, body, adminId) {
     antes, despues: updated,
   });
 
-  // Notificar al usuario
-  const notificacion = await crearNotificacionInterna({
-    usuario_id: factura.usuario_id,
-    tipo: "factura_rechazada",
-    canal: "whatsapp",
-    payload: {
-      factura_id: facturaId,
-      servicio: factura.servicio,
-      motivo: motivo_rechazo,
-      mensaje: `Tu factura de ${factura.servicio || "servicio"} fue rechazada. Motivo: ${motivo_rechazo}`,
-    },
-  });
+  // No se envía notificación al usuario.
 
-  return success({
-    ...updated,
-    notificacion: notificacion ? {
-      id: notificacion.id,
-      tipo: notificacion.tipo,
-      mensaje: notificacion.payload?.mensaje || "",
-    } : null,
-  });
+  return success(updated);
 }
 
 /**
@@ -297,11 +285,16 @@ async function listarFacturasPorObligacion(obligacionId) {
     servicio: f.servicio,
     monto: f.monto,
     estado: f.estado,
+    validacion_estado: f.validacion_estado,
+    grupo: f.grupo,
+    aproximacion_porcentaje: f.aproximacion_porcentaje,
     origen: f.origen,
     archivo_url: f.archivo_url,
+    pagina_pago: f.pagina_pago,
     etiqueta: f.etiqueta,
     fecha_emision: f.fecha_emision,
     fecha_vencimiento: f.fecha_vencimiento,
+    fecha_recordatorio: f.fecha_recordatorio,
     periodo: f.periodo,
     extraccion_estado: f.extraccion_estado,
     extraccion_json: f.extraccion_json,
@@ -352,11 +345,14 @@ async function actualizarContadoresObligacion(obligacionId) {
 }
 
 /**
- * Actualizar solo el monto de una factura HEREDADA (aproximar).
- * NO cambia el estado, solo ajusta el monto.
+ * Aproximar el monto de una factura.
+ * Acepta `monto` directo o un `porcentaje` (default 10) sobre el último monto
+ * conocido de la misma factura. Si la factura no tiene monto previo, busca el
+ * último monto del mismo servicio para el mismo usuario.
+ * Cambia estado='aproximada' y guarda aproximacion_porcentaje (si aplica).
  */
 async function actualizarMontoFactura(facturaId, body) {
-  const { monto, observaciones_admin } = body;
+  const { monto: montoDirecto, porcentaje, observaciones_admin } = body;
 
   const { data: factura, error: findErr } = await supabase
     .from("facturas")
@@ -366,28 +362,64 @@ async function actualizarMontoFactura(facturaId, body) {
 
   if (findErr || !factura) return errors.notFound("Factura no encontrada");
 
-  // Solo permitir aproximación en heredadas no validadas
-  if (factura.origen !== "auto" || factura.estado !== "extraida") {
-    return errors.invalidTransition(
-      `Solo puedes aproximar facturas heredadas en estado 'extraida'. Esta factura está en estado '${factura.estado}' con origen '${factura.origen}'.`
-    );
+  // Solo se puede aproximar si la factura todavía no está pagada
+  if (factura.estado === "pagada") {
+    return errors.invalidTransition("No se puede aproximar una factura ya pagada.");
+  }
+
+  // Calcular el monto final
+  let montoFinal = montoDirecto;
+  let porcentajeAplicado = null;
+
+  if (montoFinal == null && porcentaje != null) {
+    // Buscar monto base: la factura misma o el último del mismo servicio del usuario
+    let montoBase = factura.monto != null ? Number(factura.monto) : null;
+    if (montoBase == null && factura.servicio) {
+      const { data: previa } = await supabase
+        .from("facturas")
+        .select("monto")
+        .eq("usuario_id", factura.usuario_id)
+        .eq("servicio", factura.servicio)
+        .not("monto", "is", null)
+        .order("creado_en", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (previa && previa.monto != null) montoBase = Number(previa.monto);
+    }
+    if (montoBase == null) {
+      return errors.validation("No hay monto base histórico para calcular el porcentaje. Envía 'monto' directamente.");
+    }
+    porcentajeAplicado = porcentaje;
+    montoFinal = Math.round(montoBase * (1 + porcentaje / 100));
+  }
+
+  if (montoFinal == null) {
+    return errors.validation("Debes enviar 'monto' o 'porcentaje'.");
   }
 
   const antes = { ...factura };
+  const updateData = {
+    monto: montoFinal,
+    estado: "aproximada",
+    observaciones_admin: observaciones_admin !== undefined ? observaciones_admin : factura.observaciones_admin,
+  };
+  if (porcentajeAplicado != null) updateData.aproximacion_porcentaje = porcentajeAplicado;
+
   const { data: updated, error: updateErr } = await supabase
     .from("facturas")
-    .update({
-      monto,
-      observaciones_admin: observaciones_admin || null,
-    })
+    .update(updateData)
     .eq("id", facturaId)
     .select()
     .single();
 
   if (updateErr) throw new Error(`Error actualizando monto: ${updateErr.message}`);
 
+  if (factura.obligacion_id) {
+    try { await actualizarContadoresObligacion(factura.obligacion_id); } catch (e) { /* noop */ }
+  }
+
   await registrarAuditLog({
-    actor_tipo: "usuario",
+    actor_tipo: "admin",
     accion: "aproximar_factura",
     entidad: "facturas",
     entidad_id: facturaId,
@@ -400,8 +432,89 @@ async function actualizarMontoFactura(facturaId, body) {
     servicio: updated.servicio,
     monto_anterior: factura.monto,
     monto_nuevo: updated.monto,
-    estado: "extraida",
+    porcentaje_aplicado: porcentajeAplicado,
+    estado: updated.estado,
   });
+}
+
+/**
+ * Edición libre de cualquier campo de una factura por parte del admin.
+ * - Permite modificar servicio, monto, fechas, etiqueta, grupo, periodo,
+ *   referencia_pago, tipo_referencia, archivo_url, observaciones,
+ *   estado y validacion_estado.
+ * - Si se cambia `estado` a 'pagada' manualmente, recalcula contadores.
+ * - No envía notificaciones al usuario.
+ */
+async function actualizarFactura(facturaId, body, actorTipo = "admin", actorId = null) {
+  const { data: factura, error: findErr } = await supabase
+    .from("facturas")
+    .select("*")
+    .eq("id", facturaId)
+    .single();
+
+  if (findErr || !factura) return errors.notFound("Factura no encontrada");
+
+  const updates = {};
+  const editable = [
+    "servicio", "monto", "fecha_vencimiento", "fecha_emision", "fecha_recordatorio",
+    "referencia_pago", "tipo_referencia", "etiqueta", "archivo_url", "pagina_pago",
+    "observaciones_admin", "motivo_rechazo", "grupo",
+    "estado", "validacion_estado", "aproximacion_porcentaje",
+  ];
+  for (const k of editable) {
+    if (body[k] !== undefined) updates[k] = body[k];
+  }
+
+  if (body.periodo) {
+    const periodoNorm = normalizarPeriodo(body.periodo);
+    if (!periodoNorm) return errors.validation("Periodo inválido");
+    updates.periodo = periodoNorm;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return errors.validation("No se enviaron campos para actualizar");
+  }
+
+  // Validar transición si se cambia validacion_estado
+  if (updates.validacion_estado && updates.validacion_estado !== factura.validacion_estado) {
+    if (!isValidTransition("facturas_validacion", factura.validacion_estado, updates.validacion_estado)) {
+      return errors.invalidTransition(
+        `Transición inválida: validacion_estado '${factura.validacion_estado}' → '${updates.validacion_estado}'.`
+      );
+    }
+  }
+
+  // Validar transición si se cambia estado
+  if (updates.estado && updates.estado !== factura.estado) {
+    if (!isValidTransition("facturas", factura.estado, updates.estado)) {
+      return errors.invalidTransition(
+        `Transición inválida: estado '${factura.estado}' → '${updates.estado}'.`
+      );
+    }
+  }
+
+  const antes = { ...factura };
+  const { data: updated, error: updateErr } = await supabase
+    .from("facturas")
+    .update(updates)
+    .eq("id", facturaId)
+    .select()
+    .single();
+
+  if (updateErr) throw new Error(`Error actualizando factura: ${updateErr.message}`);
+
+  if (factura.obligacion_id) {
+    try { await actualizarContadoresObligacion(factura.obligacion_id); } catch (e) { /* noop */ }
+  }
+
+  await registrarAuditLog({
+    actor_tipo: actorTipo, actor_id: actorId,
+    accion: "actualizar_factura",
+    entidad: "facturas", entidad_id: facturaId,
+    antes, despues: updated,
+  });
+
+  return success(updated);
 }
 
 /**
@@ -491,12 +604,35 @@ async function eliminarFactura(facturaId, { actor = "admin" } = {}) {
   });
 }
 
+/**
+ * Catálogo simple de etiquetas usadas en el sistema (Opción B del requerimiento).
+ * Devuelve los valores DISTINCT de la columna `etiqueta` ordenados alfabéticamente.
+ */
+async function listarEtiquetasDistinct() {
+  const { data, error } = await supabase
+    .from("facturas")
+    .select("etiqueta")
+    .not("etiqueta", "is", null);
+
+  if (error) throw new Error(`Error listando etiquetas: ${error.message}`);
+
+  const set = new Set();
+  for (const row of data || []) {
+    const v = (row.etiqueta || "").trim();
+    if (v) set.add(v);
+  }
+  const etiquetas = Array.from(set).sort((a, b) => a.localeCompare(b, "es"));
+  return success({ total: etiquetas.length, etiquetas });
+}
+
 module.exports = {
   capturaFactura,
   validarFactura,
   rechazarFactura,
   actualizarMontoFactura,
+  actualizarFactura,
   listarFacturasPorObligacion,
   actualizarContadoresObligacion,
   eliminarFactura,
+  listarEtiquetasDistinct,
 };

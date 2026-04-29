@@ -13,7 +13,7 @@ const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 /**
  * Crear una notificación para un usuario.
  */
-async function crearNotificacion({ telefono, tipo, canal, payload }) {
+async function crearNotificacion({ telefono, tipo, canal, destinatario, payload }) {
   const usuario = await resolverUsuarioPorTelefono(telefono);
   if (!usuario) return errors.notFound("Usuario no encontrado con ese teléfono");
 
@@ -23,6 +23,7 @@ async function crearNotificacion({ telefono, tipo, canal, payload }) {
       usuario_id: usuario.usuario_id,
       tipo,
       canal: canal || "whatsapp",
+      destinatario: destinatario || "usuario",
       payload: payload || {},
       estado: "pendiente",
     })
@@ -38,13 +39,14 @@ async function crearNotificacion({ telefono, tipo, canal, payload }) {
  * Crear notificación interna (desde otros servicios, sin resolver teléfono).
  * Recibe directamente usuario_id.
  */
-async function crearNotificacionInterna({ usuario_id, tipo, canal, payload }) {
+async function crearNotificacionInterna({ usuario_id, tipo, canal, destinatario, payload }) {
   const { data, error } = await supabase
     .from("notificaciones")
     .insert({
       usuario_id,
       tipo,
       canal: canal || "whatsapp",
+      destinatario: destinatario || (usuario_id ? "usuario" : "admin"),
       payload: payload || {},
       estado: "pendiente",
     })
@@ -62,7 +64,7 @@ async function crearNotificacionInterna({ usuario_id, tipo, canal, payload }) {
 /**
  * Crear notificación masiva (a todos los usuarios activos, filtro opcional por plan).
  */
-async function crearNotificacionMasiva({ tipo, canal, payload, filtro_plan }) {
+async function crearNotificacionMasiva({ tipo, canal, destinatario, payload, filtro_plan }) {
   let query = supabase
     .from("usuarios")
     .select("id")
@@ -83,6 +85,7 @@ async function crearNotificacionMasiva({ tipo, canal, payload, filtro_plan }) {
     usuario_id: u.id,
     tipo,
     canal: canal || "whatsapp",
+    destinatario: destinatario || "usuario",
     payload: payload || {},
     estado: "pendiente",
   }));
@@ -100,7 +103,7 @@ async function crearNotificacionMasiva({ tipo, canal, payload, filtro_plan }) {
 /**
  * Listar notificaciones con filtros.
  */
-async function listarNotificaciones({ telefono, tipo, estado, limit, offset }) {
+async function listarNotificaciones({ telefono, tipo, estado, canal, canal_grupo, destinatario, limit, offset }) {
   let query = supabase
     .from("notificaciones")
     .select("*, usuarios(nombre, apellido, telefono)", { count: "exact" })
@@ -114,6 +117,10 @@ async function listarNotificaciones({ telefono, tipo, estado, limit, offset }) {
   }
   if (tipo) query = query.eq("tipo", tipo);
   if (estado) query = query.eq("estado", estado);
+  if (canal) query = query.eq("canal", canal);
+  if (canal_grupo === "bot") query = query.in("canal", ["whatsapp", "telegram"]);
+  if (canal_grupo === "admin") query = query.in("canal", ["admin", "interno", "sistema"]);
+  if (destinatario) query = query.eq("destinatario", destinatario);
 
   const { data, error, count } = await query;
   if (error) throw new Error(`Error listando notificaciones: ${error.message}`);
@@ -425,9 +432,9 @@ async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
   // PASO 2: Obtener TODAS las facturas de TODAS las obligaciones
   const { data: facturasDelMes } = await supabase
     .from('facturas')
-    .select('id, servicio, etiqueta, monto, estado')
+    .select('id, servicio, etiqueta, monto, estado, validacion_estado')
     .in('obligacion_id', obligacionIds)
-    .eq('estado', 'validada')
+    .eq('validacion_estado', 'validada')
     .order('etiqueta', { ascending: true });
   
   if (!facturasDelMes || facturasDelMes.length === 0) {
@@ -580,6 +587,7 @@ async function crearAlertaAdmin(datos) {
       usuario_id: null, // ⚠️ Clave: NO asociar a ningún usuario
       tipo: "alerta_admin",
       canal: "sistema",
+      destinatario: "admin",
       payload: {
         tipo_alerta: tipo_alerta || "usuario_sin_respuesta",
         mensaje: mensaje,

@@ -31,6 +31,10 @@ const upsertUsuarioAdminSchema = z.object({
   correo: z.string().email().optional(),
   direccion: z.string().optional(),
   plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
+  // Nuevos campos del rediseño 2026-04 (mockup modal "Agregar usuario")
+  tipo_identificacion: z.enum(["CC", "NIT"]).optional(),
+  numero_identificacion: z.string().max(32).optional(),
+  ciudad: z.string().max(80).optional(),
 });
 
 // Schema para actualizar usuario por ID (admin puede cambiar teléfono)
@@ -42,6 +46,9 @@ const updateUsuarioAdminSchema = z.object({
   direccion: z.string().optional().nullable(),
   plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
   activo: z.boolean().optional(),
+  tipo_identificacion: z.enum(["CC", "NIT"]).nullable().optional(),
+  numero_identificacion: z.string().max(32).nullable().optional(),
+  ciudad: z.string().max(80).nullable().optional(),
 });
 
 const queryHistorialSchema = z.object({

@@ -6,6 +6,7 @@ const supabase = require("../../config/supabase");
 const { success, errors } = require("../../utils/response");
 const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
+const { crearSuscripcionInicial } = require("../users/users.service");
 const {
   distribuirFacturasEnCuotas,
   adaptarCuotasAProgamacion,
@@ -202,17 +203,17 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     .filter(p => p.facturas && p.facturas.periodo === periodoTarget)
     .reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
 
-  // Facturas del mes que son validadas (TODO excepto extraida y rechazada)
+  // Facturas del mes con validacion_estado='validada' (modelo nuevo)
   const allFacturasMes = (obligacionesMes || []).reduce((acc, obl) => {
     return acc.concat(obl.facturas || []);
   }, []);
 
   const facturasValidadasMes = allFacturasMes.filter(
-    f => !["extraida", "rechazada"].includes(f.estado)
+    f => f.validacion_estado === "validada"
   );
 
   const facturasPendienteMes = allFacturasMes.filter(
-    f => !["extraida", "rechazada", "pagada"].includes(f.estado)
+    f => f.validacion_estado === "validada" && f.estado !== "pagada"
   );
 
   const totalPendienteMes = facturasPendienteMes.reduce(
@@ -230,7 +231,7 @@ async function perfilCompletoCliente(telefono, periodo = null) {
   try {
     // Extraer facturas validadas del mes (para cálculo de cuotas monetarias)
     const facturasValidadasDelMes = allFacturasMes.filter(
-      f => ["validada"].includes(f.estado)
+      f => f.validacion_estado === "validada"
     );
 
     if (facturasValidadasDelMes.length > 0) {
@@ -581,19 +582,19 @@ async function dashboard(params = {}) {
   const distribucionSaldo = Object.values(saldoPorUsuario)
     .sort((a, b) => b.saldo - a.saldo); // Ordenar de mayor a menor, SIN limitar a TOP 3
 
-  // 5.2 Distribución de Facturas por Estado
+  // 5.2 Distribución de Facturas por Estado (modelo nuevo: estado + validacion_estado)
   const distribucionFacturas = {
     pagadas: (todasLasFacturas || []).filter((f) => f.estado === "pagada").length,
-    pendientes: (todasLasFacturas || []).filter((f) => f.estado !== "pagada").length,
+    pendientes: (todasLasFacturas || []).filter((f) => f.estado === "pendiente").length,
+    aproximadas: (todasLasFacturas || []).filter((f) => f.estado === "aproximada").length,
+    sin_factura: (todasLasFacturas || []).filter((f) => f.estado === "sin_factura").length,
     vencidas: (facturasNoPagadas || []).filter(
       (f) =>
-        f.fecha_vencimiento && 
+        f.fecha_vencimiento &&
         f.fecha_vencimiento < new Date().toISOString().split("T")[0]
     ).length,
-    enRevision: (todasLasFacturas || []).filter((f) => f.estado === "en_revision")
-      .length,
-    rechazadas: (todasLasFacturas || []).filter((f) => f.estado === "rechazada")
-      .length,
+    sin_validar: (todasLasFacturas || []).filter((f) => f.validacion_estado === "sin_validar").length,
+    rechazadas: (todasLasFacturas || []).filter((f) => f.validacion_estado === "rechazada").length,
   };
 
   // 5.3 Distribución de Usuarios por Plan
@@ -633,7 +634,7 @@ async function dashboard(params = {}) {
  * - Si existe: actualiza campos enviados
  * - Si no existe: crea usuario + ajustes automáticos
  */
-async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, correo, direccion, plan }) {
+async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, correo, direccion, plan, tipo_identificacion, numero_identificacion, ciudad }) {
   let existing = null;
 
   if (usuario_id) {
@@ -686,6 +687,9 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
     if (correo !== undefined) updates.correo = correo;
     if (direccion !== undefined) updates.direccion = direccion;
     if (plan !== undefined) updates.plan = plan;
+    if (tipo_identificacion !== undefined) updates.tipo_identificacion = tipo_identificacion;
+    if (numero_identificacion !== undefined) updates.numero_identificacion = numero_identificacion;
+    if (ciudad !== undefined) updates.ciudad = ciudad;
 
     if (Object.keys(updates).length > 0) {
       const { error: updateErr } = await supabase
@@ -715,6 +719,9 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
       correo: correo || null,
       direccion: direccion || null,
       plan: plan || undefined, // Dejar que DB use su DEFAULT 'control'
+      tipo_identificacion: tipo_identificacion || null,
+      numero_identificacion: numero_identificacion || null,
+      ciudad: ciudad || null,
     })
     .select()
     .single();
@@ -744,6 +751,13 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
 
   if (progErr) {
     console.error("[ADMIN-USERS] Error creando programacion_recargas:", progErr.message);
+  }
+
+  // 6. Crear "Obligación 0" — suscripción DeOne para el periodo en curso
+  try {
+    await crearSuscripcionInicial(newUser.id, planUsuario);
+  } catch (susErr) {
+    console.error("[ADMIN-USERS] Error creando suscripción inicial:", susErr.message);
   }
 
   return success({
@@ -780,6 +794,9 @@ async function updateUsuarioAdmin(userId, fields) {
   if (fields.direccion !== undefined) updates.direccion = fields.direccion;
   if (fields.plan !== undefined) updates.plan = fields.plan;
   if (fields.activo !== undefined) updates.activo = fields.activo;
+  if (fields.tipo_identificacion !== undefined) updates.tipo_identificacion = fields.tipo_identificacion;
+  if (fields.numero_identificacion !== undefined) updates.numero_identificacion = fields.numero_identificacion;
+  if (fields.ciudad !== undefined) updates.ciudad = fields.ciudad;
 
   if (Object.keys(updates).length === 0) {
     return errors.badRequest("No se enviaron campos para actualizar");
@@ -831,7 +848,7 @@ async function getUsuarioByTelefono(telefono) {
 
   const { data, error } = await supabase
     .from("usuarios")
-    .select("id, telefono, nombre, apellido, correo, direccion, plan, activo")
+    .select("id, telefono, nombre, apellido, correo, direccion, plan, activo, tipo_identificacion, numero_identificacion, ciudad")
     .eq("telefono", telefono.trim())
     .single();
 
@@ -852,6 +869,9 @@ async function getUsuarioByTelefono(telefono) {
     direccion: data.direccion,
     plan: data.plan,
     activo: data.activo,
+    tipo_identificacion: data.tipo_identificacion,
+    numero_identificacion: data.numero_identificacion,
+    ciudad: data.ciudad,
   });
 }
 
@@ -872,7 +892,7 @@ async function getUsuarioByTelefono(telefono) {
  *   - limit: registros por página (default: 20)
  */
 async function listarNotificacionesAdmin(filters = {}) {
-  const { tipo, estado, usuario_id, periodo, desde, hasta, page = 1, limit = 20 } = filters;
+  const { tipo, estado, usuario_id, periodo, desde, hasta, canal, canal_grupo, destinatario, page = 1, limit = 20 } = filters;
   const offset = (page - 1) * limit;
 
   let query = supabase
@@ -894,6 +914,21 @@ async function listarNotificacionesAdmin(filters = {}) {
   // Filtro por usuario
   if (usuario_id) {
     query = query.eq("usuario_id", usuario_id);
+  }
+
+  // Filtro por canal exacto y por agrupación bot/admin
+  if (canal) {
+    query = query.eq("canal", canal);
+  }
+  if (canal_grupo === "bot") {
+    query = query.in("canal", ["whatsapp", "telegram"]);
+  } else if (canal_grupo === "admin") {
+    query = query.in("canal", ["admin", "interno", "sistema"]);
+  }
+
+  // Filtro por destinatario (admin/usuario)
+  if (destinatario) {
+    query = query.eq("destinatario", destinatario);
   }
 
   // Filtro por período (YYYY-MM)
@@ -938,12 +973,16 @@ async function listarNotificacionesAdmin(filters = {}) {
  *   - periodo: 'YYYY-MM' para filtrar por mes
  */
 async function obtenerEstadisticasNotificaciones(filters = {}) {
-  const { usuario_id, periodo, desde, hasta } = filters;
+  const { usuario_id, periodo, desde, hasta, canal, canal_grupo, destinatario } = filters;
 
   // Construir query base con filtros
   let buildQuery = () => {
     let q = supabase.from("notificaciones").select("*", { count: "exact" });
     if (usuario_id) q = q.eq("usuario_id", usuario_id);
+    if (canal) q = q.eq("canal", canal);
+    if (canal_grupo === "bot") q = q.in("canal", ["whatsapp", "telegram"]);
+    else if (canal_grupo === "admin") q = q.in("canal", ["admin", "interno", "sistema"]);
+    if (destinatario) q = q.eq("destinatario", destinatario);
     if (periodo) {
       const periodoStart = `${periodo}-01`;
       const [year, month] = periodo.split("-");
@@ -1231,7 +1270,7 @@ async function generarNotificacionesMock() {
  *   - page/limit: paginación
  */
 async function listarAlertasAdmin(filters = {}) {
-  const { desde, hasta, page = 1, limit = 20 } = filters;
+  const { desde, hasta, canal, canal_grupo, destinatario, page = 1, limit = 20 } = filters;
   const offset = (page - 1) * limit;
 
   let query = supabase
@@ -1240,6 +1279,11 @@ async function listarAlertasAdmin(filters = {}) {
     .eq("tipo", "alerta_admin")
     .order("creado_en", { ascending: false })
     .range(offset, offset + limit - 1);
+
+  if (canal) query = query.eq("canal", canal);
+  if (canal_grupo === "bot") query = query.in("canal", ["whatsapp", "telegram"]);
+  else if (canal_grupo === "admin") query = query.in("canal", ["admin", "interno", "sistema"]);
+  if (destinatario) query = query.eq("destinatario", destinatario);
 
   // Filtro por rango de fechas
   if (desde) {
@@ -1309,7 +1353,7 @@ async function obtenerSolicitudOriginal(alerta_id) {
  * (solicitud_recarga_inicio_mes, recordatorio_recarga, recarga_confirmada, etc.)
  */
 async function listarNotificacionesAutomaticas(filters = {}) {
-  const { desde, hasta, page = 1, limit = 20 } = filters;
+  const { desde, hasta, canal, canal_grupo, destinatario, page = 1, limit = 20 } = filters;
   const offset = (page - 1) * limit;
 
   let query = supabase
@@ -1318,12 +1362,18 @@ async function listarNotificacionesAutomaticas(filters = {}) {
     .in("tipo", [
       "solicitud_recarga_inicio_mes",
       "solicitud_recarga",
+      "recarga_aprobada",
       "recarga_confirmada",
-      "factura_validada",
+      "obligacion_cumplida",
       "recordatorio_recarga"
     ])
     .order("creado_en", { ascending: false })
     .range(offset, offset + limit - 1);
+
+  if (canal) query = query.eq("canal", canal);
+  if (canal_grupo === "bot") query = query.in("canal", ["whatsapp", "telegram"]);
+  else if (canal_grupo === "admin") query = query.in("canal", ["admin", "interno", "sistema"]);
+  if (destinatario) query = query.eq("destinatario", destinatario);
 
   // Filtro por rango de fechas
   if (desde) {
@@ -1360,38 +1410,45 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
         servicio,
         monto,
         estado,
+        validacion_estado,
+        grupo,
+        aproximacion_porcentaje,
         periodo,
         fecha_vencimiento,
         fecha_emision,
+        fecha_recordatorio,
         referencia_pago,
         tipo_referencia,
         archivo_url,
+        pagina_pago,
         etiqueta,
         creado_en,
         extraccion_estado,
         origen,
         motivo_rechazo,
+        observaciones_admin,
         usuario:usuario_id(id, nombre, apellido, telefono, plan),
-        obligaciones!obligacion_id(id, descripcion, numero_referencia, tipo_referencia)
+        obligaciones!obligacion_id(id, descripcion, numero_referencia, tipo_referencia, grupo, receptor)
       `, { count: "exact" })
       .order("fecha_vencimiento", { ascending: true, nullsFirst: true })
       .order("creado_en", { ascending: false });
 
-    // Filtros
+    // Filtros por estado/validacion_estado (nuevo modelo)
     if (estado) {
-      if (estado === "pagada") {
-        query = query.eq("estado", "pagada");
-      } else if (estado === "pendiente") {
-        // Pendientes = facturas validadas (no pagadas)
-        query = query.eq("estado", "validada");
-      } else if (estado === "sin_factura") {
-        // Sin factura = sin validar (extraida) Y origen auto
-        query = query.eq("estado", "extraida").eq("origen", "auto");
-      } else if (estado === "sin_validar") {
-        // Sin validar = sin validar (extraida) pero NO auto
-        query = query.eq("estado", "extraida").neq("origen", "auto");
-      } else {
-        query = query.eq("estado", estado);
+      switch (estado) {
+        case "pagada":
+        case "pendiente":
+        case "aproximada":
+        case "sin_factura":
+          query = query.eq("estado", estado);
+          break;
+        case "sin_validar":
+        case "validada":
+        case "rechazada":
+          query = query.eq("validacion_estado", estado);
+          break;
+        default:
+          query = query.eq("estado", estado);
       }
     }
 
@@ -1414,17 +1471,23 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
       servicio: f.servicio,
       monto: f.monto,
       estado: f.estado,
+      validacion_estado: f.validacion_estado,
+      grupo: f.grupo,
+      aproximacion_porcentaje: f.aproximacion_porcentaje,
       periodo: f.periodo,
       fecha_vencimiento: f.fecha_vencimiento,
       fecha_emision: f.fecha_emision,
+      fecha_recordatorio: f.fecha_recordatorio,
       referencia_pago: f.referencia_pago,
       tipo_referencia: f.tipo_referencia,
       archivo_url: f.archivo_url,
+      pagina_pago: f.pagina_pago,
       etiqueta: f.etiqueta,
       creado_en: f.creado_en,
       extraccion_estado: f.extraccion_estado,
       origen: f.origen,
       motivo_rechazo: f.motivo_rechazo,
+      observaciones_admin: f.observaciones_admin,
       usuario: f.usuario ? {
         id: f.usuario.id,
         nombre: f.usuario.nombre,
@@ -1436,10 +1499,17 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
         id: f.obligaciones.id,
         descripcion: f.obligaciones.descripcion,
         numero_referencia: f.obligaciones.numero_referencia,
-        tipo_referencia: f.obligaciones.tipo_referencia
+        tipo_referencia: f.obligaciones.tipo_referencia,
+        grupo: f.obligaciones.grupo,
+        receptor: f.obligaciones.receptor,
       } : null,
       usuario_nombre: f.usuario ? `${f.usuario.nombre} ${f.usuario.apellido}` : "Sin usuario",
-      badge_color: f.estado === "pagada" ? "green" : f.estado === "validada" ? "blue" : f.estado === "rechazada" ? "red" : "gray"
+      badge_color: f.estado === "pagada" ? "green"
+        : f.estado === "aproximada" ? "yellow"
+        : f.estado === "sin_factura" ? "gray"
+        : f.validacion_estado === "rechazada" ? "red"
+        : f.validacion_estado === "validada" ? "blue"
+        : "gray"
     }));
 
     return success({
@@ -1466,7 +1536,7 @@ async function obtenerNotificacionesAcciones(filters = {}) {
   const { usuario_id, tipo, page = 1, limit = 20 } = filters;
 
   try {
-    // 1. Obtener facturas pendientes de validación
+    // 1. Obtener facturas pendientes de validación (admin)
     let queryFacturas = supabase
       .from("facturas")
       .select(`
@@ -1475,13 +1545,15 @@ async function obtenerNotificacionesAcciones(filters = {}) {
         servicio,
         monto,
         estado,
+        validacion_estado,
         periodo,
         creado_en,
         extraccion_estado,
         origen,
         usuarios(id, nombre, apellido, telefono)
       `)
-      .in("estado", ["extraida", "en_revision"])
+      .eq("validacion_estado", "sin_validar")
+      .neq("estado", "pagada")
       .order("creado_en", { ascending: false });
 
     if (usuario_id) queryFacturas = queryFacturas.eq("usuario_id", usuario_id);
@@ -1537,6 +1609,7 @@ async function obtenerNotificacionesAcciones(filters = {}) {
         monto: fac.monto,
         periodo: fac.periodo,
         estado: fac.estado,
+        validacion_estado: fac.validacion_estado,
         extraccion_estado: fac.extraccion_estado,
         origen: fac.origen,
         es_heredada: fac.origen === 'auto',

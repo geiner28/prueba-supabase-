@@ -31,10 +31,13 @@ async function crearPago(body, actorTipo = "sistema", actorId = null) {
     return errors.notFound("Factura no encontrada o no pertenece al usuario");
   }
 
-  if (factura.estado !== "validada") {
+  if (factura.validacion_estado !== "validada") {
     return errors.invalidTransition(
-      `No se puede crear pago para factura en estado '${factura.estado}'. Debe estar 'validada'.`
+      `No se puede crear pago para factura con validacion_estado='${factura.validacion_estado}'. Debe estar 'validada' por el admin.`
     );
+  }
+  if (factura.estado === "pagada") {
+    return errors.invalidTransition("La factura ya está pagada.");
   }
 
   // Calcular disponible GLOBAL (igual al Perfil)
@@ -161,16 +164,24 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
     if (obligacionEstado === "completada" && obl) {
       nuevaObligacionId = await crearObligacionSiguienteMes(obl);
 
-      // Notificar: obligación completada
+      // Única notificación permitida hacia el usuario para este flujo:
+      // 'obligacion_cumplida' (campaña bot — "obligación pagada").
+      const periodoLabel = formatearPeriodo(obl.periodo);
+      const mensajeCumplida = `✅ ¡Tu obligación de ${periodoLabel} fue completada!`;
+
       await crearNotificacionInterna({
         usuario_id: pago.usuario_id,
-        tipo: "obligacion_completada",
+        tipo: "obligacion_cumplida",
         canal: "whatsapp",
+        destinatario: "usuario",
         payload: {
           obligacion_id: obligacionId,
+          servicio: obl.servicio || obl.descripcion || null,
           periodo: obl.periodo,
-          mensaje: `¡Tu obligación de ${formatearPeriodo(obl.periodo)} ha sido completada! Todas tus facturas fueron pagadas.`,
+          monto_total: Number(obl.monto_total || 0),
+          monto_pagado: Number(obl.monto_pagado || 0),
           nueva_obligacion_id: nuevaObligacionId,
+          mensaje: mensajeCumplida,
         },
       });
     }
@@ -306,9 +317,9 @@ async function crearObligacionSiguienteMes(obligacionCompletada) {
     // Incluye más campos: etiqueta, archivo_url, tipo_referencia, referencia_pago
     const { data: facturasAntiguas } = await supabase
       .from("facturas")
-      .select("servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago")
+      .select("servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo")
       .eq("obligacion_id", obligacionCompletada.id)
-      .not("estado", "eq", "rechazada");
+      .neq("validacion_estado", "rechazada");
 
     if (facturasAntiguas && facturasAntiguas.length > 0) {
       const nuevasFacturas = facturasAntiguas.map(f => ({
@@ -317,13 +328,15 @@ async function crearObligacionSiguienteMes(obligacionCompletada) {
         servicio: f.servicio,
         periodo: nuevoPeriodo,
         monto: f.monto,
-        estado: "extraida",
-        origen: "auto",  // ✅ Explícitamente "auto" para heredadas
+        estado: "pendiente",
+        validacion_estado: "sin_validar",
+        origen: "auto",
         extraccion_estado: "ok",
         etiqueta: f.etiqueta || null,
         archivo_url: f.archivo_url || null,
         tipo_referencia: f.tipo_referencia || null,
         referencia_pago: f.referencia_pago || null,
+        grupo: f.grupo || null,
       }));
 
       const { error: insertErr } = await supabase
@@ -353,19 +366,8 @@ async function crearObligacionSiguienteMes(obligacionCompletada) {
       despues: nueva,
     });
 
-    // Notificar al usuario de la nueva obligación
-    await crearNotificacionInterna({
-      usuario_id: obligacionCompletada.usuario_id,
-      tipo: "nueva_obligacion",
-      canal: "whatsapp",
-      payload: {
-        obligacion_id: nueva.id,
-        periodo: nuevoPeriodo,
-        descripcion,
-        total_facturas: (facturasAntiguas || []).length,
-        mensaje: `Se ha creado tu nueva obligación para ${mesNombre} ${anio} con ${(facturasAntiguas || []).length} factura(s). Recuerda hacer tu recarga a tiempo.`,
-      },
-    });
+    // No se notifica al usuario sobre la nueva obligación: solo se le envían
+    // mensajes para 'pedir recarga', 'recarga validada' y 'obligación pagada'.
 
     console.log(`[PAGOS] ✅ Obligación auto-creada: ${nueva.id} para periodo ${nuevoPeriodo}`);
     return nueva.id;

@@ -110,6 +110,9 @@ router.get("/notificaciones/list", authAdmin, async (req, res, next) => {
       periodo: req.query.periodo,
       desde: req.query.desde,
       hasta: req.query.hasta,
+      canal: req.query.canal,
+      canal_grupo: req.query.canal_grupo,
+      destinatario: req.query.destinatario,
       page: parseInt(req.query.page) || 1,
       limit: Math.min(parseInt(req.query.limit) || 20, 100), // Max 100 per page
     };
@@ -128,6 +131,9 @@ router.get("/notificaciones/estadisticas", authAdmin, async (req, res, next) => 
       periodo: req.query.periodo,
       desde: req.query.desde,
       hasta: req.query.hasta,
+      canal: req.query.canal,
+      canal_grupo: req.query.canal_grupo,
+      destinatario: req.query.destinatario,
     };
     const result = await service.obtenerEstadisticasNotificaciones(filters);
     res.status(result.statusCode).json(result.body);
@@ -191,6 +197,9 @@ router.get("/notificaciones/alertas", authAdmin, async (req, res, next) => {
     const filters = {
       desde: req.query.desde,
       hasta: req.query.hasta,
+      canal: req.query.canal,
+      canal_grupo: req.query.canal_grupo,
+      destinatario: req.query.destinatario,
       page: parseInt(req.query.page) || 1,
       limit: Math.min(parseInt(req.query.limit) || 20, 100),
     };
@@ -207,6 +216,9 @@ router.get("/notificaciones/automaticas", authAdmin, async (req, res, next) => {
     const filters = {
       desde: req.query.desde,
       hasta: req.query.hasta,
+      canal: req.query.canal,
+      canal_grupo: req.query.canal_grupo,
+      destinatario: req.query.destinatario,
       page: parseInt(req.query.page) || 1,
       limit: Math.min(parseInt(req.query.limit) || 20, 100),
     };

@@ -14,7 +14,18 @@ const { registrarAuditLog } = require("../../utils/auditLog");
  * Crear obligación del periodo.
  * Ej: "Pagos de Febrero 2026"
  */
-async function crearObligacion({ telefono, descripcion, periodo }) {
+async function crearObligacion({
+  telefono,
+  descripcion,
+  periodo,
+  servicio,
+  tipo_referencia,
+  numero_referencia,
+  pagina_pago,
+  periodicidad,
+  receptor,
+  grupo,
+}) {
   const usuario = await resolverUsuarioPorTelefono(telefono);
   if (!usuario) return errors.notFound("Usuario no encontrado con ese teléfono");
 
@@ -27,9 +38,13 @@ async function crearObligacion({ telefono, descripcion, periodo }) {
       usuario_id: usuario.usuario_id,
       descripcion,
       periodo: periodoNorm,
-      servicio: descripcion,
-      tipo_referencia: "periodo",
-      numero_referencia: `${periodoNorm}-${Date.now()}`,
+      servicio: servicio || descripcion,
+      tipo_referencia: tipo_referencia || "periodo",
+      numero_referencia: numero_referencia || `${periodoNorm}-${Date.now()}`,
+      pagina_pago: pagina_pago || null,
+      periodicidad: periodicidad || null,
+      receptor: receptor || null,
+      grupo: grupo || null,
       estado: "activa",
       total_facturas: 0,
       facturas_pagadas: 0,
@@ -125,6 +140,17 @@ async function obtenerObligacion(obligacionId) {
 
 /**
  * Actualizar obligación.
+ *
+ * Valida transiciones de estado y aplica efectos colaterales:
+ *   - completada      → emite notificación 'obligacion_cumplida' (campaña bot).
+ *   - cancelada       → suspende solicitudes de recarga / recordatorios automáticos
+ *                       de la obligación (cron job no las volverá a evaluar).
+ *
+ * Transiciones permitidas:
+ *   activa        → en_progreso | completada | cancelada
+ *   en_progreso   → completada  | cancelada
+ *   completada    → (terminal — solo admin con flag explícito puede revertir)
+ *   cancelada     → activa  (reactivar)
  */
 async function actualizarObligacion(id, updates) {
   const { data: existing, error: findErr } = await supabase
@@ -137,8 +163,30 @@ async function actualizarObligacion(id, updates) {
 
   const cleanUpdates = {};
   if (updates.descripcion !== undefined) cleanUpdates.descripcion = updates.descripcion;
-  if (updates.estado !== undefined) cleanUpdates.estado = updates.estado;
-  if (updates.estado === "completada") cleanUpdates.completada_en = new Date().toISOString();
+  if (updates.pagina_pago !== undefined) cleanUpdates.pagina_pago = updates.pagina_pago;
+  if (updates.periodicidad !== undefined) cleanUpdates.periodicidad = updates.periodicidad;
+  if (updates.receptor !== undefined) cleanUpdates.receptor = updates.receptor;
+  if (updates.grupo !== undefined) cleanUpdates.grupo = updates.grupo;
+
+  // Validar transición de estado si se solicita cambio
+  if (updates.estado !== undefined && updates.estado !== existing.estado) {
+    const allowed = {
+      activa: ["en_progreso", "completada", "cancelada"],
+      en_progreso: ["completada", "cancelada"],
+      completada: [], // terminal — bloqueado para evitar inconsistencias con pagos
+      cancelada: ["activa"],
+    };
+    const validNext = allowed[existing.estado] || [];
+    if (!validNext.includes(updates.estado)) {
+      return errors.invalidTransition(
+        `Transición no válida: '${existing.estado}' → '${updates.estado}'. ` +
+        `Desde '${existing.estado}' solo se permite: [${validNext.join(", ") || "ninguno"}].`
+      );
+    }
+    cleanUpdates.estado = updates.estado;
+    if (updates.estado === "completada") cleanUpdates.completada_en = new Date().toISOString();
+    if (updates.estado === "activa") cleanUpdates.completada_en = null;
+  }
 
   if (Object.keys(cleanUpdates).length === 0) {
     return errors.validation("No se proporcionaron campos para actualizar");
@@ -153,7 +201,104 @@ async function actualizarObligacion(id, updates) {
 
   if (error) throw new Error(`Error actualizando obligación: ${error.message}`);
 
+  // Side effects según el nuevo estado
+  if (cleanUpdates.estado === "cancelada") {
+    await suspenderRecordatoriosObligacion(id, "obligacion_cancelada");
+  }
+
+  if (cleanUpdates.estado === "completada") {
+    await emitirNotificacionCumplida(data);
+  }
+
+  await registrarAuditLog({
+    actor_tipo: "admin",
+    accion: "actualizar_obligacion",
+    entidad: "obligaciones",
+    entidad_id: id,
+    antes: existing,
+    despues: data,
+  });
+
   return success(data);
+}
+
+/**
+ * Suspende solicitudes de recarga y notificaciones pendientes
+ * asociadas a una obligación cuando esta se cancela.
+ * - solicitudes_recarga: estado → 'cancelada'
+ * - notificaciones tipo solicitud_recarga* aún pendientes → estado 'fallida'
+ */
+async function suspenderRecordatoriosObligacion(obligacionId, motivo = "obligacion_cancelada") {
+  try {
+    // 1. Cancelar solicitudes de recarga asociadas
+    const { data: solicitudes } = await supabase
+      .from("solicitudes_recarga")
+      .select("id, usuario_id")
+      .eq("obligacion_id", obligacionId)
+      .in("estado", ["pendiente", "parcial"]);
+
+    if (solicitudes && solicitudes.length > 0) {
+      await supabase
+        .from("solicitudes_recarga")
+        .update({ estado: "cancelada", actualizado_en: new Date().toISOString() })
+        .in("id", solicitudes.map(s => s.id));
+    }
+
+    // 2. Marcar notificaciones de recordatorio pendientes como fallidas
+    //    (no se entregarán al bot porque la obligación fue cancelada)
+    const { data: oblData } = await supabase
+      .from("obligaciones")
+      .select("usuario_id, periodo")
+      .eq("id", obligacionId)
+      .single();
+
+    if (oblData) {
+      await supabase
+        .from("notificaciones")
+        .update({ estado: "fallida", ultimo_error: `Obligación cancelada (${motivo})` })
+        .eq("usuario_id", oblData.usuario_id)
+        .eq("estado", "pendiente")
+        .in("tipo", [
+          "solicitud_recarga",
+          "solicitud_recarga_inicio_mes",
+          "recordatorio_recarga",
+        ]);
+    }
+
+    console.log(`[OBLIGACIONES] Recordatorios suspendidos para obligación ${obligacionId} (${solicitudes?.length || 0} solicitudes)`);
+  } catch (err) {
+    console.error(`[OBLIGACIONES] Error suspendiendo recordatorios: ${err.message}`);
+  }
+}
+
+/**
+ * Dispara la campaña 'obligacion_cumplida' para el bot/usuario
+ * cuando una obligación pasa manualmente a 'completada'.
+ */
+async function emitirNotificacionCumplida(obligacion) {
+  try {
+    const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
+    const meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+    const d = new Date(obligacion.periodo);
+    const periodoLabel = `${meses[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+
+    await crearNotificacionInterna({
+      usuario_id: obligacion.usuario_id,
+      tipo: "obligacion_cumplida",
+      canal: "whatsapp",
+      destinatario: "usuario",
+      payload: {
+        obligacion_id: obligacion.id,
+        servicio: obligacion.servicio || obligacion.descripcion || null,
+        periodo: obligacion.periodo,
+        monto_total: Number(obligacion.monto_total || 0),
+        monto_pagado: Number(obligacion.monto_pagado || 0),
+        mensaje: `✅ ¡Tu obligación de ${periodoLabel} fue completada!`,
+      },
+    });
+  } catch (err) {
+    console.error(`[OBLIGACIONES] Error emitiendo notificación cumplida: ${err.message}`);
+  }
 }
 
 /**
@@ -218,11 +363,13 @@ async function eliminarObligacion(obligacionId, { force = false, actor = "admin"
 
   const { data: facturas, error: facErr } = await supabase
     .from("facturas")
-    .select("id, estado")
+    .select("id, estado, validacion_estado")
     .eq("obligacion_id", obligacionId);
   if (facErr) throw new Error(`Error consultando facturas: ${facErr.message}`);
 
-  const protegidas = (facturas || []).filter(f => f.estado === "pagada" || f.estado === "validada");
+  const protegidas = (facturas || []).filter(
+    (f) => f.estado === "pagada" || f.validacion_estado === "validada"
+  );
   if (protegidas.length > 0) {
     return errors.invalidTransition(
       `No se puede eliminar: la obligación tiene ${protegidas.length} factura(s) pagada(s)/validada(s). Esta acción está bloqueada por integridad financiera.`

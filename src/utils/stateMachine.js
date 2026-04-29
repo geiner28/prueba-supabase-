@@ -11,11 +11,18 @@ const transitions = {
     reportada: ["en_validacion"],
     en_validacion: ["aprobada", "rechazada"],
   },
+  // Estado visible al usuario (lo que ve en el dashboard / bot)
   facturas: {
-    capturada: ["extraida", "en_revision"],
-    extraida: ["en_revision", "validada", "rechazada"],
-    en_revision: ["validada", "rechazada"],
-    validada: ["pagada"],
+    pendiente: ["pagada", "aproximada", "sin_factura"],
+    aproximada: ["pagada", "pendiente"],
+    sin_factura: ["pendiente", "aproximada", "pagada"],
+    pagada: ["pendiente"], // permitir revertir si fue marcado por error
+  },
+  // Flujo interno admin: sin_validar → validada | rechazada (reversible)
+  facturas_validacion: {
+    sin_validar: ["validada", "rechazada"],
+    validada: ["sin_validar", "rechazada"],
+    rechazada: ["sin_validar", "validada"],
   },
   pagos: {
     pendiente: ["en_proceso", "cancelado"],

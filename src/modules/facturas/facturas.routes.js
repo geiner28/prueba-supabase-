@@ -4,10 +4,20 @@
 const { Router } = require("express");
 const { authBot, authAdmin, authBotOrAdmin } = require("../../middleware/auth");
 const { validateBody } = require("../../middleware/validate");
-const { capturaFacturaSchema, validarFacturaSchema, rechazarFacturaSchema, actualizarMontoFacturaSchema } = require("./facturas.schema");
+const { capturaFacturaSchema, validarFacturaSchema, rechazarFacturaSchema, actualizarMontoFacturaSchema, actualizarFacturaSchema } = require("./facturas.schema");
 const service = require("./facturas.service");
 
 const router = Router();
+
+// GET /api/facturas/etiquetas-distinct — Catálogo simple de etiquetas usadas (Opción B)
+router.get("/etiquetas-distinct", authBotOrAdmin, async (req, res, next) => {
+  try {
+    const result = await service.listarEtiquetasDistinct();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
 
 // POST /api/facturas/captura — Registrar factura (servicio) dentro de una obligación
 router.post("/captura", authBotOrAdmin, validateBody(capturaFacturaSchema), async (req, res, next) => {
@@ -53,6 +63,16 @@ router.put("/:id/rechazar", authAdmin, validateBody(rechazarFacturaSchema), asyn
 router.put("/:id/aproximar", authBotOrAdmin, validateBody(actualizarMontoFacturaSchema), async (req, res, next) => {
   try {
     const result = await service.actualizarMontoFactura(req.params.id, req.validatedBody);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/facturas/:id — Edición libre de cualquier campo (admin)
+router.put("/:id", authAdmin, validateBody(actualizarFacturaSchema), async (req, res, next) => {
+  try {
+    const result = await service.actualizarFactura(req.params.id, req.validatedBody, req.actorTipo, req.adminId);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);

@@ -8,6 +8,11 @@ const upsertUserSchema = z.object({
   nombre: z.string().optional(),
   apellido: z.string().optional(),
   correo: z.string().email("Correo inválido").optional(),
+  // Nuevos campos del rediseño 2026-04 (mockup modal "Agregar usuario")
+  tipo_identificacion: z.enum(["CC", "NIT"]).optional(),
+  numero_identificacion: z.string().max(32).optional(),
+  ciudad: z.string().max(80).optional(),
+  direccion: z.string().max(255).optional(),
 });
 
 const updatePlanSchema = z.object({

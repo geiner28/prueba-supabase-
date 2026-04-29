@@ -41,7 +41,7 @@ async function listUsers(query = {}) {
 /**
  * Upsert: busca por teléfono; si existe actualiza, si no crea usuario + ajustes.
  */
-async function upsertUser({ telefono, nombre, apellido, correo }) {
+async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificacion, numero_identificacion, ciudad, direccion }) {
   // 1. Buscar usuario existente
   const { data: existing, error: findErr } = await supabase
     .from("usuarios")
@@ -60,6 +60,10 @@ async function upsertUser({ telefono, nombre, apellido, correo }) {
     if (nombre !== undefined) updates.nombre = nombre;
     if (apellido !== undefined) updates.apellido = apellido;
     if (correo !== undefined) updates.correo = correo;
+    if (tipo_identificacion !== undefined) updates.tipo_identificacion = tipo_identificacion;
+    if (numero_identificacion !== undefined) updates.numero_identificacion = numero_identificacion;
+    if (ciudad !== undefined) updates.ciudad = ciudad;
+    if (direccion !== undefined) updates.direccion = direccion;
 
     if (Object.keys(updates).length > 0) {
       const { error: updateErr } = await supabase
@@ -76,7 +80,16 @@ async function upsertUser({ telefono, nombre, apellido, correo }) {
   // 2. Crear usuario nuevo
   const { data: newUser, error: createErr } = await supabase
     .from("usuarios")
-    .insert({ telefono, nombre: nombre || telefono, apellido, correo })
+    .insert({
+      telefono,
+      nombre: nombre || telefono,
+      apellido,
+      correo,
+      tipo_identificacion: tipo_identificacion || null,
+      numero_identificacion: numero_identificacion || null,
+      ciudad: ciudad || null,
+      direccion: direccion || null,
+    })
     .select()
     .single();
 
@@ -109,7 +122,82 @@ async function upsertUser({ telefono, nombre, apellido, correo }) {
     console.error("[USERS] Error creando programacion_recargas:", progErr.message);
   }
 
+  // 5. Crear "Obligación 0" — suscripción DeOne para el periodo en curso
+  try {
+    await crearSuscripcionInicial(newUser.id, plan);
+  } catch (susErr) {
+    console.error("[USERS] Error creando suscripción inicial:", susErr.message);
+  }
+
   return success({ usuario_id: newUser.id, creado: true }, 201);
+}
+
+/**
+ * Crear "Obligación 0" — la suscripción DeOne del usuario:
+ * - Una obligación con tipo_referencia='suscripcion' (receptor='DeOne', grupo=1, monto=0)
+ * - Una factura asociada (también monto 0, sin_validar / pendiente)
+ *
+ * Se invoca SOLO al crear el usuario (no en updates).
+ */
+async function crearSuscripcionInicial(usuarioId, plan) {
+  const hoy = new Date();
+  const periodo = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`;
+  const planLabel = (plan || "control").toString();
+
+  const { data: oblExistente } = await supabase
+    .from("obligaciones")
+    .select("id")
+    .eq("usuario_id", usuarioId)
+    .eq("tipo_referencia", "suscripcion")
+    .eq("periodo", periodo)
+    .limit(1);
+
+  if (oblExistente && oblExistente.length > 0) {
+    return oblExistente[0].id;
+  }
+
+  const { data: nuevaObl, error: oblErr } = await supabase
+    .from("obligaciones")
+    .insert({
+      usuario_id: usuarioId,
+      descripcion: `Suscripción DeOne — ${planLabel}`,
+      tipo_referencia: "suscripcion",
+      numero_referencia: planLabel,
+      receptor: "DeOne",
+      grupo: 1,
+      periodicidad: "mensual",
+      periodo,
+      monto_total: 0,
+      monto_pagado: 0,
+      estado: "pendiente",
+    })
+    .select()
+    .single();
+
+  if (oblErr) throw new Error(`Error creando obligación de suscripción: ${oblErr.message}`);
+
+  const { error: facErr } = await supabase
+    .from("facturas")
+    .insert({
+      usuario_id: usuarioId,
+      obligacion_id: nuevaObl.id,
+      servicio: "Suscripción DeOne",
+      etiqueta: planLabel,
+      periodo,
+      monto: 0,
+      estado: "pendiente",
+      validacion_estado: "sin_validar",
+      origen: "auto",
+      tipo_referencia: "suscripcion",
+      referencia_pago: planLabel,
+      grupo: 1,
+    });
+
+  if (facErr) {
+    console.error("[USERS] Error creando factura suscripción:", facErr.message);
+  }
+
+  return nuevaObl.id;
 }
 
 /**
@@ -265,4 +353,4 @@ async function deleteUser({ id, telefono, hard = false, force = false, actor }) 
   });
 }
 
-module.exports = { listUsers, upsertUser, updateUserPlan, getUserByTelefono, deleteUser };
+module.exports = { listUsers, upsertUser, updateUserPlan, getUserByTelefono, deleteUser, crearSuscripcionInicial };
