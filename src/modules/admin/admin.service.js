@@ -895,6 +895,8 @@ async function listarNotificacionesAdmin(filters = {}) {
   const { tipo, estado, usuario_id, periodo, desde, hasta, canal, canal_grupo, destinatario, page = 1, limit = 20 } = filters;
   const offset = (page - 1) * limit;
 
+  const normalizarDestinatario = (n) => n?.destinatario || (n?.usuario_id ? "usuario" : "admin");
+
   let query = supabase
     .from("notificaciones")
     .select("*, usuarios(nombre, apellido, telefono)", { count: "exact" })
@@ -927,6 +929,7 @@ async function listarNotificacionesAdmin(filters = {}) {
   }
 
   // Filtro por destinatario (admin/usuario)
+  // Compatibilidad: algunos entornos no tienen la columna `destinatario`.
   if (destinatario) {
     query = query.eq("destinatario", destinatario);
   }
@@ -955,6 +958,47 @@ async function listarNotificacionesAdmin(filters = {}) {
   }
 
   const { data, error, count } = await query;
+
+  // Fallback para esquemas legacy sin columna `destinatario`.
+  if (error && error.message && error.message.includes("notificaciones.destinatario")) {
+    let legacyQuery = supabase
+      .from("notificaciones")
+      .select("*, usuarios(nombre, apellido, telefono)")
+      .order("creado_en", { ascending: false });
+
+    if (tipo) legacyQuery = legacyQuery.eq("tipo", tipo);
+    if (estado) legacyQuery = legacyQuery.eq("estado", estado);
+    if (usuario_id) legacyQuery = legacyQuery.eq("usuario_id", usuario_id);
+    if (canal) legacyQuery = legacyQuery.eq("canal", canal);
+    if (canal_grupo === "bot") legacyQuery = legacyQuery.in("canal", ["whatsapp", "telegram"]);
+    else if (canal_grupo === "admin") legacyQuery = legacyQuery.in("canal", ["admin", "interno", "sistema"]);
+    if (periodo) {
+      const periodoStart = `${periodo}-01`;
+      const [year, month] = periodo.split("-");
+      const nextMonth = parseInt(month) + 1;
+      const periodoEnd = nextMonth > 12
+        ? `${parseInt(year) + 1}-01-01`
+        : `${year}-${String(nextMonth).padStart(2, "0")}-01`;
+      legacyQuery = legacyQuery.gte("creado_en", periodoStart).lt("creado_en", periodoEnd);
+    }
+    if (desde) legacyQuery = legacyQuery.gte("creado_en", `${desde}T00:00:00Z`);
+    if (hasta) legacyQuery = legacyQuery.lte("creado_en", `${hasta}T23:59:59Z`);
+
+    const { data: legacyData, error: legacyError } = await legacyQuery;
+    if (legacyError) throw new Error(`Error listando notificaciones: ${legacyError.message}`);
+
+    const filtradas = (legacyData || []).filter((n) => normalizarDestinatario(n) === destinatario);
+    const paginadas = filtradas.slice(offset, offset + limit);
+
+    return success({
+      notificaciones: paginadas,
+      total: filtradas.length,
+      page,
+      limit,
+      total_pages: Math.ceil((filtradas.length || 0) / limit),
+    });
+  }
+
   if (error) throw new Error(`Error listando notificaciones: ${error.message}`);
 
   return success({
@@ -974,6 +1018,7 @@ async function listarNotificacionesAdmin(filters = {}) {
  */
 async function obtenerEstadisticasNotificaciones(filters = {}) {
   const { usuario_id, periodo, desde, hasta, canal, canal_grupo, destinatario } = filters;
+  const normalizarDestinatario = (n) => n?.destinatario || (n?.usuario_id ? "usuario" : "admin");
 
   // Construir query base con filtros
   let buildQuery = () => {
@@ -1002,13 +1047,68 @@ async function obtenerEstadisticasNotificaciones(filters = {}) {
   };
 
   // Obtener totales por estado - CADA UNO necesita su propia query
-  const { count: totalAll } = await buildQuery();
-  const { count: totalPendiente } = await buildQuery().eq("estado", "pendiente");
-  const { count: totalEnviada } = await buildQuery().eq("estado", "enviada");
-  const { count: totalLeida } = await buildQuery().eq("estado", "leida");
+  const totalAllRes = await buildQuery();
+  const totalPendienteRes = await buildQuery().eq("estado", "pendiente");
+  const totalEnviadaRes = await buildQuery().eq("estado", "enviada");
+  const totalLeidaRes = await buildQuery().eq("estado", "leida");
 
   // Obtener TODAS las notificaciones para distribución por tipo
-  const { data: notificacionesTodas } = await buildQuery();
+  let { data: notificacionesTodas } = await buildQuery();
+
+  // Fallback para esquemas legacy sin columna `destinatario`.
+  if (destinatario && totalAllRes?.error && totalAllRes.error.message && totalAllRes.error.message.includes("notificaciones.destinatario")) {
+    let legacyQuery = supabase.from("notificaciones").select("*");
+    if (usuario_id) legacyQuery = legacyQuery.eq("usuario_id", usuario_id);
+    if (canal) legacyQuery = legacyQuery.eq("canal", canal);
+    if (canal_grupo === "bot") legacyQuery = legacyQuery.in("canal", ["whatsapp", "telegram"]);
+    else if (canal_grupo === "admin") legacyQuery = legacyQuery.in("canal", ["admin", "interno", "sistema"]);
+    if (periodo) {
+      const periodoStart = `${periodo}-01`;
+      const [year, month] = periodo.split("-");
+      const nextMonth = parseInt(month) + 1;
+      const periodoEnd = nextMonth > 12
+        ? `${parseInt(year) + 1}-01-01`
+        : `${year}-${String(nextMonth).padStart(2, "0")}-01`;
+      legacyQuery = legacyQuery.gte("creado_en", periodoStart).lt("creado_en", periodoEnd);
+    }
+    if (desde) legacyQuery = legacyQuery.gte("creado_en", `${desde}T00:00:00Z`);
+    if (hasta) legacyQuery = legacyQuery.lte("creado_en", `${hasta}T23:59:59Z`);
+
+    const { data: legacyTodas, error: legacyError } = await legacyQuery;
+    if (legacyError) throw new Error(`Error obteniendo estadísticas: ${legacyError.message}`);
+
+    const filtradas = (legacyTodas || []).filter((n) => normalizarDestinatario(n) === destinatario);
+    const total = filtradas.length;
+    const totalPendiente = filtradas.filter((n) => n.estado === "pendiente").length;
+    const totalEnviada = filtradas.filter((n) => n.estado === "enviada").length;
+    const totalLeida = filtradas.filter((n) => n.estado === "leida").length;
+
+    const distribucionTiposLegacy = {};
+    filtradas.forEach((notif) => {
+      if (!distribucionTiposLegacy[notif.tipo]) {
+        distribucionTiposLegacy[notif.tipo] = { total: 0, pendiente: 0, enviada: 0, leida: 0 };
+      }
+      distribucionTiposLegacy[notif.tipo].total++;
+      if (notif.estado === "pendiente") distribucionTiposLegacy[notif.tipo].pendiente++;
+      else if (notif.estado === "enviada") distribucionTiposLegacy[notif.tipo].enviada++;
+      else if (notif.estado === "leida") distribucionTiposLegacy[notif.tipo].leida++;
+    });
+
+    return success({
+      estadisticas: {
+        total,
+        no_enviadas: totalPendiente,
+        enviadas: totalEnviada,
+        leidas: totalLeida,
+        por_tipo: distribucionTiposLegacy,
+      },
+    });
+  }
+
+  if (totalAllRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalAllRes.error.message}`);
+  if (totalPendienteRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalPendienteRes.error.message}`);
+  if (totalEnviadaRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalEnviadaRes.error.message}`);
+  if (totalLeidaRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalLeidaRes.error.message}`);
   
   const distribucionTipos = {};
   (notificacionesTodas || []).forEach(notif => {
@@ -1023,10 +1123,10 @@ async function obtenerEstadisticasNotificaciones(filters = {}) {
 
   return success({
     estadisticas: {
-      total: totalAll || 0,
-      no_enviadas: totalPendiente || 0,
-      enviadas: totalEnviada || 0,
-      leidas: totalLeida || 0,
+      total: totalAllRes.count || 0,
+      no_enviadas: totalPendienteRes.count || 0,
+      enviadas: totalEnviadaRes.count || 0,
+      leidas: totalLeidaRes.count || 0,
       por_tipo: distribucionTipos,
     },
   });

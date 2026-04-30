@@ -104,6 +104,8 @@ async function crearNotificacionMasiva({ tipo, canal, destinatario, payload, fil
  * Listar notificaciones con filtros.
  */
 async function listarNotificaciones({ telefono, tipo, estado, canal, canal_grupo, destinatario, limit, offset }) {
+  const normalizarDestinatario = (n) => n?.destinatario || (n?.usuario_id ? "usuario" : "admin");
+
   let query = supabase
     .from("notificaciones")
     .select("*, usuarios(nombre, apellido, telefono)", { count: "exact" })
@@ -123,6 +125,31 @@ async function listarNotificaciones({ telefono, tipo, estado, canal, canal_grupo
   if (destinatario) query = query.eq("destinatario", destinatario);
 
   const { data, error, count } = await query;
+  if (error && error.message && error.message.includes("notificaciones.destinatario") && destinatario) {
+    let legacyQuery = supabase
+      .from("notificaciones")
+      .select("*, usuarios(nombre, apellido, telefono)")
+      .order("creado_en", { ascending: false });
+
+    if (telefono) {
+      const usuario = await resolverUsuarioPorTelefono(telefono);
+      if (!usuario) return errors.notFound("Usuario no encontrado con ese teléfono");
+      legacyQuery = legacyQuery.eq("usuario_id", usuario.usuario_id);
+    }
+    if (tipo) legacyQuery = legacyQuery.eq("tipo", tipo);
+    if (estado) legacyQuery = legacyQuery.eq("estado", estado);
+    if (canal) legacyQuery = legacyQuery.eq("canal", canal);
+    if (canal_grupo === "bot") legacyQuery = legacyQuery.in("canal", ["whatsapp", "telegram"]);
+    if (canal_grupo === "admin") legacyQuery = legacyQuery.in("canal", ["admin", "interno", "sistema"]);
+
+    const { data: legacyData, error: legacyError } = await legacyQuery;
+    if (legacyError) throw new Error(`Error listando notificaciones: ${legacyError.message}`);
+
+    const filtradas = (legacyData || []).filter((n) => normalizarDestinatario(n) === destinatario);
+    const paginadas = filtradas.slice(offset, offset + limit);
+    return success({ notificaciones: paginadas, total: filtradas.length, limit, offset });
+  }
+
   if (error) throw new Error(`Error listando notificaciones: ${error.message}`);
 
   return success({ notificaciones: data, total: count, limit, offset });
