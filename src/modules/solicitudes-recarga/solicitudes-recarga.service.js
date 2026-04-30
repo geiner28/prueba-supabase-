@@ -69,7 +69,7 @@ async function generarSolicitudes(body) {
     .from("facturas")
     .select("id, servicio, monto, fecha_vencimiento, estado, creado_en")
     .eq("obligacion_id", obligacion_id)
-    .in("estado", ["validada"])
+    .eq("validacion_estado", "validada")
     .order("fecha_vencimiento", { ascending: true });
 
   if (factErr) throw new Error(`Error obteniendo facturas: ${factErr.message}`);
@@ -604,7 +604,7 @@ async function recalcularSolicitudesPorObligacion(obligacionId) {
     .from("facturas")
     .select("id, servicio, monto, fecha_vencimiento, estado, creado_en")
     .eq("obligacion_id", obligacionId)
-    .in("estado", ["validada"]);
+    .eq("validacion_estado", "validada");
 
   if (factErr) {
     console.error("[SOLICITUDES_RECARGA] Error obteniendo facturas:", factErr.message);
@@ -806,7 +806,7 @@ async function obtenerFacturasValidadas(obligacionId) {
     .from('facturas')
     .select('id, servicio, monto, fecha_vencimiento, creado_en, periodo')
     .eq('obligacion_id', obligacionId)
-    .in('estado', ['validada']);
+    .eq('validacion_estado', 'validada');
   
   if (error) throw new Error(`Error obteniendo facturas: ${error.message}`);
   return data || [];

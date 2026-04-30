@@ -42,7 +42,7 @@ async function crearObligacion({
       tipo_referencia: tipo_referencia || "periodo",
       numero_referencia: numero_referencia || `${periodoNorm}-${Date.now()}`,
       pagina_pago: pagina_pago || null,
-      periodicidad: periodicidad || null,
+      periodicidad: periodicidad || "mensual",
       receptor: receptor || null,
       grupo: grupo || null,
       estado: "activa",
@@ -164,7 +164,7 @@ async function actualizarObligacion(id, updates) {
   const cleanUpdates = {};
   if (updates.descripcion !== undefined) cleanUpdates.descripcion = updates.descripcion;
   if (updates.pagina_pago !== undefined) cleanUpdates.pagina_pago = updates.pagina_pago;
-  if (updates.periodicidad !== undefined) cleanUpdates.periodicidad = updates.periodicidad;
+  if (updates.periodicidad !== undefined) cleanUpdates.periodicidad = updates.periodicidad || "mensual";
   if (updates.receptor !== undefined) cleanUpdates.receptor = updates.receptor;
   if (updates.grupo !== undefined) cleanUpdates.grupo = updates.grupo;
 

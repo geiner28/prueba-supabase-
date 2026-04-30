@@ -12,7 +12,8 @@ const createObligacionSchema = z.object({
   servicio: z.string().min(1).optional(),
   tipo_referencia: z.string().min(1).optional(),
   numero_referencia: z.string().min(1).optional(),
-  pagina_pago: z.string().url().optional(),
+  // En admin se usa como nombre de portal (ej: "Nequi", "PSE"), no siempre URL.
+  pagina_pago: z.string().min(1).max(255).optional(),
   periodicidad: z.string().min(1).optional(),
   // Nuevos campos del rediseño 2026-04 (mockup modales)
   receptor: z.string().min(1).max(120).optional(),
@@ -22,7 +23,7 @@ const createObligacionSchema = z.object({
 const updateObligacionSchema = z.object({
   descripcion: z.string().optional(),
   estado: z.enum(["activa", "en_progreso", "completada", "cancelada"]).optional(),
-  pagina_pago: z.string().url().nullable().optional(),
+  pagina_pago: z.string().min(1).max(255).nullable().optional(),
   periodicidad: z.string().nullable().optional(),
   receptor: z.string().max(120).nullable().optional(),
   grupo: z.coerce.number().int().min(1).max(2).nullable().optional(),
