@@ -109,7 +109,12 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
     .select()
     .single();
 
-  if (createErr) throw new Error(`Error creando usuario: ${createErr.message}`);
+  if (createErr) {
+    if (createErr.code === "23505") {
+      throw Object.assign(new Error("Ya existe un usuario con ese número de teléfono"), { statusCode: 409 });
+    }
+    throw new Error(`Error creando usuario: ${createErr.message}`);
+  }
 
   // 3. Crear ajustes por defecto
   const { error: ajustesErr } = await supabase

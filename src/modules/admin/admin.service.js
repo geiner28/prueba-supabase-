@@ -809,7 +809,13 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
     .select()
     .single();
 
-  if (createErr) throw new Error(`Error creando usuario: ${createErr.message}`);
+  if (createErr) {
+    // Unique constraint violation (teléfono ya registrado por carrera)
+    if (createErr.code === "23505") {
+      return errors.conflict("Ya existe un usuario con ese número de teléfono");
+    }
+    throw new Error(`Error creando usuario: ${createErr.message}`);
+  }
 
   // 4. Crear ajustes por defecto
   const { error: ajustesErr } = await supabase
