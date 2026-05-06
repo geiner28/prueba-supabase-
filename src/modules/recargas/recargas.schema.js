@@ -7,7 +7,7 @@ const reportarRecargaSchema = z.object({
   telefono: z.string().min(7),
   periodo: z.string().min(7, "Periodo requerido"),
   monto: z.number().positive("Monto debe ser positivo"),
-  comprobante_url: z.string().min(1, "Comprobante requerido"),
+  comprobante_url: z.string().min(1).optional(),
   referencia_tx: z.string().optional(),
 });
 

@@ -25,6 +25,16 @@ router.get("/dashboard", authAdmin, async (req, res, next) => {
   }
 });
 
+// GET /api/admin/dashboard/periodos — Meses/años con registros reales
+router.get("/dashboard/periodos", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.dashboardPeriodosDisponibles();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/admin/clientes — Listar todos los clientes (paginado + búsqueda)
 router.get("/clientes", authAdmin, validateQuery(queryClientesSchema), async (req, res, next) => {
   try {
@@ -283,6 +293,17 @@ router.get("/transacciones", authAdmin, validateQuery(queryTransaccionesSchema),
   try {
     const result = await service.listarTransacciones(req.validatedQuery);
     res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/jobs/evaluacion-recargas — Ejecutar job de evaluación de campañas manualmente
+router.post("/jobs/evaluacion-recargas", authAdmin, async (req, res, next) => {
+  try {
+    const { runJobManually } = require("../../../jobs/recordatorios.job");
+    const result = await runJobManually();
+    res.status(200).json({ ok: true, data: result });
   } catch (err) {
     next(err);
   }

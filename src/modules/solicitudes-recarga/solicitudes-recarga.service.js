@@ -804,7 +804,7 @@ async function obtenerObligacionConUsuario(obligacionId) {
 async function obtenerFacturasValidadas(obligacionId) {
   const { data, error } = await supabase
     .from('facturas')
-    .select('id, servicio, monto, fecha_vencimiento, creado_en, periodo')
+    .select('id, servicio, monto, fecha_vencimiento, fecha_recordatorio, creado_en, periodo')
     .eq('obligacion_id', obligacionId)
     .eq('validacion_estado', 'validada');
   
@@ -1080,8 +1080,11 @@ async function evaluarObligacion(obligacionId) {
     return null;
   }
   
-  // 3. Calcular fecha de recordatorio por factura
-  const fechasRecordatorio = facturas.map(f => calcularFechaRecordatorioFacturaV2(f));
+  // 3. Determinar fecha de recordatorio por factura
+  // Usar fecha_recordatorio almacenada en DB si existe, si no recalcular
+  const fechasRecordatorio = facturas.map(f => 
+    f.fecha_recordatorio ? String(f.fecha_recordatorio).slice(0, 10) : calcularFechaRecordatorioFacturaV2(f)
+  );
   const fechaRecordatorioObligacion = fechasRecordatorio.reduce((min, f) => f < min ? f : min, fechasRecordatorio[0]);
   
   // 4. Obtener fecha de hoy

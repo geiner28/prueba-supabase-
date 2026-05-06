@@ -9,8 +9,35 @@ const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
 const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
-const { crearNotificacionInterna, crearNotificacionRecarga, prepararDatosNotificacion, existeNotificacionHoy } = require("../notificaciones/notificaciones.service");
+const { crearNotificacionInterna, crearNotificacionRecarga, prepararDatosNotificacion, existeNotificacionHoy, crearNotificacionAdminFacturaPorValidar } = require("../notificaciones/notificaciones.service");
 const { evaluarObligacion, detectarPrimeraRecargaDelMes } = require("../solicitudes-recarga/solicitudes-recarga.service");
+
+async function usuarioPermiteGrupo2(usuarioId) {
+  const { data: programacion } = await supabase
+    .from("programacion_recargas")
+    .select("cantidad_recargas")
+    .eq("usuario_id", usuarioId)
+    .single();
+
+  return Number(programacion?.cantidad_recargas || 1) === 2;
+}
+
+function calcularFechaRecordatorio(fechaVencimiento) {
+  if (!fechaVencimiento) return null;
+
+  const raw = String(fechaVencimiento);
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? new Date(`${raw}T00:00:00`)
+    : new Date(raw);
+
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  parsed.setDate(parsed.getDate() - 5);
+  const y = parsed.getFullYear();
+  const m = String(parsed.getMonth() + 1).padStart(2, "0");
+  const d = String(parsed.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
 
 /**
  * Capturar factura (registrar un servicio dentro de una obligación).
@@ -45,6 +72,14 @@ async function capturaFactura(body, actorTipo = "bot") {
   // 4. Determinar si requiere revisión manual del admin
   const requiereRevision = ["dudosa", "fallida"].includes(extraccion_estado) || monto == null;
 
+  const grupoObjetivo = grupo || obligacion.grupo || null;
+  if (Number(grupoObjetivo) === 2) {
+    const permiteGrupo2 = await usuarioPermiteGrupo2(usuario.usuario_id);
+    if (!permiteGrupo2) {
+      return errors.validation("No se puede asignar Grupo 2 cuando el usuario tiene una sola fecha de recarga");
+    }
+  }
+
   // En el nuevo modelo TODA factura nueva nace con:
   //   estado = 'pendiente'        (visible al usuario)
   //   validacion_estado = 'sin_validar' (proceso admin pendiente)
@@ -63,7 +98,7 @@ async function capturaFactura(body, actorTipo = "bot") {
       referencia_pago: referencia_pago || null,
       tipo_referencia: tipo_referencia || null,
       etiqueta: etiqueta || null,
-      grupo: grupo || obligacion.grupo || null,
+      grupo: grupoObjetivo,
       estado: "pendiente",
       validacion_estado: "sin_validar",
       origen: origen || null,
@@ -108,6 +143,13 @@ async function capturaFactura(body, actorTipo = "bot") {
     despues: factura,
   });
 
+  // 8b. Notificación INTERNA para admin: factura por validar (sin mensaje al usuario).
+  if (factura.validacion_estado === "sin_validar") {
+    crearNotificacionAdminFacturaPorValidar({ factura, usuario }).catch(err => {
+      console.error("[FACTURAS] Error creando notificación admin factura_por_validar:", err.message);
+    });
+  }
+
   // 9. Evaluar obligación para generar solicitud de recarga y notificación
   evaluarYNotificarObligacion(obligacion_id, obligacion.periodo).catch(err => {
     console.error("[FACTURAS] Error en evaluación post-creación:", err.message);
@@ -130,7 +172,7 @@ async function capturaFactura(body, actorTipo = "bot") {
  * - NO envía mensaje al usuario (solo se le notifica recarga / pago / cumplimiento).
  */
 async function validarFactura(facturaId, body, adminId) {
-  const { monto, servicio, fecha_vencimiento, fecha_emision, fecha_recordatorio,
+  const { monto, servicio, fecha_vencimiento, fecha_emision,
           referencia_pago, tipo_referencia, etiqueta, archivo_url, pagina_pago,
           observaciones_admin, periodo, grupo } = body;
 
@@ -158,14 +200,32 @@ async function validarFactura(facturaId, body, adminId) {
   if (servicio !== undefined) updateData.servicio = servicio;
   if (fecha_vencimiento !== undefined) updateData.fecha_vencimiento = fecha_vencimiento;
   if (fecha_emision !== undefined) updateData.fecha_emision = fecha_emision;
-  if (fecha_recordatorio !== undefined) updateData.fecha_recordatorio = fecha_recordatorio;
+
+  // Regla de negocio: al validar, el recordatorio se asigna automáticamente
+  // 5 días antes del vencimiento validado.
+  const fechaVencimientoValidada = fecha_vencimiento !== undefined
+    ? fecha_vencimiento
+    : factura.fecha_vencimiento;
+  const fechaRecordatorioAuto = calcularFechaRecordatorio(fechaVencimientoValidada);
+  if (fechaRecordatorioAuto) updateData.fecha_recordatorio = fechaRecordatorioAuto;
+
   if (referencia_pago !== undefined) updateData.referencia_pago = referencia_pago;
-  if (tipo_referencia !== undefined) updateData.tipo_referencia = tipo_referencia;
+  if (tipo_referencia !== undefined) {
+    updateData.tipo_referencia = String(tipo_referencia).trim() === "" ? null : tipo_referencia;
+  }
   if (etiqueta !== undefined) updateData.etiqueta = etiqueta;
   if (archivo_url !== undefined) updateData.archivo_url = archivo_url;
   if (pagina_pago !== undefined) updateData.pagina_pago = pagina_pago;
   if (observaciones_admin !== undefined) updateData.observaciones_admin = observaciones_admin;
-  if (grupo !== undefined) updateData.grupo = grupo;
+  if (grupo !== undefined) {
+    if (Number(grupo) === 2) {
+      const permiteGrupo2 = await usuarioPermiteGrupo2(factura.usuario_id);
+      if (!permiteGrupo2) {
+        return errors.validation("No se puede asignar Grupo 2 cuando el usuario tiene una sola fecha de recarga");
+      }
+    }
+    updateData.grupo = grupo;
+  }
   if (periodo) {
     const periodoNorm = normalizarPeriodo(periodo);
     if (!periodoNorm) return errors.validation("Periodo inválido");
@@ -198,6 +258,14 @@ async function validarFactura(facturaId, body, adminId) {
     accion: "validar_factura", entidad: "facturas", entidad_id: facturaId,
     antes, despues: updated,
   });
+
+  // Auto-resolver notificación admin factura_por_validar (si existe).
+  await supabase
+    .from("notificaciones")
+    .update({ estado: "revisada" })
+    .eq("tipo", "factura_por_validar")
+    .in("estado", ["pendiente", "sin_revisar"])
+    .contains("payload", { factura_id: facturaId });
 
   // No se envía notificación al usuario: la validación es interna del admin.
 
@@ -261,6 +329,14 @@ async function rechazarFactura(facturaId, body, adminId) {
     accion: "rechazar_factura", entidad: "facturas", entidad_id: facturaId,
     antes, despues: updated,
   });
+
+  // Auto-resolver notificación admin factura_por_validar (si existe).
+  await supabase
+    .from("notificaciones")
+    .update({ estado: "revisada" })
+    .eq("tipo", "factura_por_validar")
+    .in("estado", ["pendiente", "sin_revisar"])
+    .contains("payload", { factura_id: facturaId });
 
   // No se envía notificación al usuario.
 
@@ -465,6 +541,10 @@ async function actualizarFactura(facturaId, body, actorTipo = "admin", actorId =
     if (body[k] !== undefined) updates[k] = body[k];
   }
 
+  if (updates.tipo_referencia !== undefined) {
+    updates.tipo_referencia = String(updates.tipo_referencia).trim() === "" ? null : updates.tipo_referencia;
+  }
+
   if (body.periodo) {
     const periodoNorm = normalizarPeriodo(body.periodo);
     if (!periodoNorm) return errors.validation("Periodo inválido");
@@ -473,6 +553,14 @@ async function actualizarFactura(facturaId, body, actorTipo = "admin", actorId =
 
   if (Object.keys(updates).length === 0) {
     return errors.validation("No se enviaron campos para actualizar");
+  }
+
+  // Regla de negocio: con una sola recarga configurada, no se puede asignar grupo 2.
+  if (updates.grupo !== undefined && Number(updates.grupo) === 2) {
+    const permiteGrupo2 = await usuarioPermiteGrupo2(factura.usuario_id);
+    if (!permiteGrupo2) {
+      return errors.validation("No se puede asignar Grupo 2 cuando el usuario tiene una sola fecha de recarga");
+    }
   }
 
   // Validar transición si se cambia validacion_estado

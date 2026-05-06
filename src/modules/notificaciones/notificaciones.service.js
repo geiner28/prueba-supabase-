@@ -23,7 +23,6 @@ async function crearNotificacion({ telefono, tipo, canal, destinatario, payload 
       usuario_id: usuario.usuario_id,
       tipo,
       canal: canal || "whatsapp",
-      destinatario: destinatario || "usuario",
       payload: payload || {},
       estado: "pendiente",
     })
@@ -39,14 +38,13 @@ async function crearNotificacion({ telefono, tipo, canal, destinatario, payload 
  * Crear notificación interna (desde otros servicios, sin resolver teléfono).
  * Recibe directamente usuario_id.
  */
-async function crearNotificacionInterna({ usuario_id, tipo, canal, destinatario, payload }) {
+async function crearNotificacionInterna({ usuario_id, tipo, canal, payload }) {
   const { data, error } = await supabase
     .from("notificaciones")
     .insert({
       usuario_id,
       tipo,
       canal: canal || "whatsapp",
-      destinatario: destinatario || (usuario_id ? "usuario" : "admin"),
       payload: payload || {},
       estado: "pendiente",
     })
@@ -85,7 +83,6 @@ async function crearNotificacionMasiva({ tipo, canal, destinatario, payload, fil
     usuario_id: u.id,
     tipo,
     canal: canal || "whatsapp",
-    destinatario: destinatario || "usuario",
     payload: payload || {},
     estado: "pendiente",
   }));
@@ -336,92 +333,56 @@ async function existeNotificacionHoy(usuarioId, tipo) {
 }
 
 /**
- * Genera mensaje de INICIO DE MES
- * Template exacto según especificación
+ * Genera mensaje de SOLICITUD DE RECARGA (template unificado).
+ * Uno de los 3 únicos mensajes que el bot envía al usuario.
  */
-function generarMensajeInicioMes(datos) {
-  const {
-    nombre_usuario,
-    mes_anterior,
-    mes_actual,
-    obligaciones,
-    total_obligaciones,
-    total_mes_anterior,
-    saldo_actual,
-    valor_a_recargar
-  } = datos;
-  
-  const fmtMonto = (v) => Number(v).toLocaleString('es-CO');
-  
-  let listaobligaciones = '';
-  for (const obl of obligaciones) {
-    listaobligaciones += `"@${obl.etiqueta}": "$ ${fmtMonto(obl.monto)}".\n`;
-  }
-  
-  const mensaje = `Hola ${nombre_usuario} ✌🏼
-Arrancamos mes!
+function generarMensajeSolicitudRecarga(datos) {
+  const { nombre_usuario, saldo_actual, valor_a_recargar } = datos;
+  const fmt = (v) => `$ ${Number(v || 0).toLocaleString('es-CO')}`;
 
-En ${mes_anterior} pagaste "$ ${fmtMonto(total_mes_anterior)}" y tienes un saldo de "$ ${fmtMonto(saldo_actual)}"
+  return `${nombre_usuario} 👋🏼
 
-Para ${mes_actual}, tus obligaciones suman "$ ${fmtMonto(total_obligaciones)}", así:
+Es momento de recargar tu cuenta para cubrir tus próximas obligaciones 🙌🏼
 
-${listaobligaciones}
-La recarga total sugerida para ${mes_actual} es de "$ ${fmtMonto(valor_a_recargar)}".
+Tu saldo actual en deOne es de ${fmt(saldo_actual)}
+
+Valor a recargar: ${fmt(valor_a_recargar)}
 
 Puedes hacer la recarga a la llave 0090944088.
 
-Apenas la hagas, me envías el comprobante y yo me encargo del resto deOne! 🙌🏼`;
-  
-  return mensaje;
+Cuando la hagas, envíame el comprobante y yo me encargo del resto deOne 👍🏼`;
 }
 
-/**
- * Genera mensaje GENÉRICO
- * Template exacto según especificación
- */
-function generarMensajeGenerico(datos) {
-  const {
-    nombre_usuario,
-    obligaciones,
-    total_obligaciones,
-    saldo_actual,
-    valor_a_recargar
-  } = datos;
-  
-  const fmtMonto = (v) => Number(v).toLocaleString('es-CO');
-  
-  let listaobligaciones = '';
-  for (const obl of obligaciones) {
-    listaobligaciones += `"@${obl.etiqueta}": "$ ${fmtMonto(obl.monto)}".\n`;
-  }
-  
-  const mensaje = `Hola ${nombre_usuario}! 👋🏼
-Ya estamos listos para recibir tu recarga, con la que cubriremos:
-${listaobligaciones}
-Total: "$ ${fmtMonto(total_obligaciones)}"
-Aplicamos tu saldo: "$ ${fmtMonto(saldo_actual)}"
-
-Total a recargar: "$ ${fmtMonto(valor_a_recargar)}".
-Puedes hacer la recarga a la llave 0090944088.
-
-Apenas la hagas, me envías el comprobante y yo me encargo del resto deOne! 🙌🏼`;
-  
-  return mensaje;
-}
+// Aliases por retrocompatibilidad: mismo template para inicio_mes / genérico / recordatorio.
+function generarMensajeInicioMes(datos) { return generarMensajeSolicitudRecarga(datos); }
+function generarMensajeGenerico(datos) { return generarMensajeSolicitudRecarga(datos); }
 
 /**
- * Genera mensaje de RECARGA CONFIRMADA
+ * Genera mensaje de RECARGA CONFIRMADA.
+ * Uno de los 3 únicos mensajes que el bot envía al usuario.
  */
 function generarMensajeConfirmada(datos) {
   const { nombre, saldo } = datos;
-  
-  const fmtSaldo = (v) => Number(v).toLocaleString('es-CO');
-  
-  const mensaje = `Recibido, ${nombre} ✌🏼
+  const fmt = (v) => `$ ${Number(v || 0).toLocaleString('es-CO')}`;
 
-Ya registré tu recarga. Tu saldo disponible en deOne es de $ ${fmtSaldo(saldo)}`;
-  
-  return mensaje;
+  return `Recibido, ¡${nombre}! 🙌🏼
+Ya registré tu recarga. Tu saldo disponible en deOne es de ${fmt(saldo)}
+
+Te aviso cuando pague tus obligaciones.`;
+}
+
+/**
+ * Genera mensaje de PAGO DE OBLIGACIÓN.
+ * Uno de los 3 únicos mensajes que el bot envía al usuario.
+ */
+function generarMensajePagoObligacion(datos) {
+  const { nombre, etiqueta, valor } = datos;
+  const fmt = (v) => `$ ${Number(v || 0).toLocaleString('es-CO')}`;
+
+  return `¡${nombre}! 🙌🏼
+Ya hice el pago de @${etiqueta} por ${fmt(valor)}.
+
+El comprobante ya quedó cargado en tu enlace habitual.`;
 }
 
 /**
@@ -614,7 +575,6 @@ async function crearAlertaAdmin(datos) {
       usuario_id: null, // ⚠️ Clave: NO asociar a ningún usuario
       tipo: "alerta_admin",
       canal: "sistema",
-      destinatario: "admin",
       payload: {
         tipo_alerta: tipo_alerta || "usuario_sin_respuesta",
         mensaje: mensaje,
@@ -637,6 +597,93 @@ async function crearAlertaAdmin(datos) {
   }
 
   console.log(`[NOTIFICACIONES] Alerta admin creada: ${tipo_alerta} para usuario ${usuario_telefono}`);
+  return data;
+}
+
+// ============================================================
+// NOTIFICACIONES INTERNAS DE ADMIN (sin mensaje al usuario)
+// ============================================================
+// Estas notificaciones SOLO aparecen en el panel admin para acciones internas.
+// NO tienen `mensaje` porque NO se envían al usuario.
+// Identificación implícita: usuario_id=null + canal='sistema'.
+
+/**
+ * Notificación admin: una factura recién creada quedó en sin_validar
+ * y necesita revisión interna del admin (validar/rechazar/aproximar).
+ */
+async function crearNotificacionAdminFacturaPorValidar({ factura, usuario }) {
+  // Número de referencia mostrado en el panel admin: número factura > etiqueta > id corto.
+  const numeroRef = factura.numero_factura || factura.etiqueta || (factura.id || '').toString().slice(0, 8);
+  const { data, error } = await supabase
+    .from("notificaciones")
+    .insert({
+      usuario_id: null,
+      tipo: "factura_por_validar",
+      canal: "sistema",
+      payload: {
+        tipo_accion: "validar_factura",
+        factura_id: factura.id,
+        usuario_id: usuario?.id || factura.usuario_id,
+        usuario_nombre: usuario?.nombre || null,
+        usuario_telefono: usuario?.telefono || null,
+        servicio: factura.servicio,
+        etiqueta: factura.etiqueta,
+        numero_ref: numeroRef,
+        periodo: factura.periodo,
+        monto: factura.monto,
+        validacion_estado: factura.validacion_estado || "sin_validar",
+        creada_en: new Date().toISOString(),
+      },
+      estado: "sin_revisar",
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[NOTIFICACIONES] Error creando notificación admin (factura_por_validar):", error.message);
+    return null;
+  }
+
+  console.log(`[NOTIFICACIONES] Notificación admin creada: factura_por_validar (factura_id=${factura.id})`);
+  return data;
+}
+
+/**
+ * Notificación admin: una recarga fue reportada por el usuario
+ * y queda en en_validacion para que el admin apruebe o rechace.
+ */
+async function crearNotificacionAdminRecargaPorValidar({ recarga, usuario }) {
+  const numeroRef = recarga.referencia_pago || recarga.numero_ref || (recarga.id || '').toString().slice(0, 8);
+  const { data, error } = await supabase
+    .from("notificaciones")
+    .insert({
+      usuario_id: null,
+      tipo: "recarga_por_validar",
+      canal: "sistema",
+      payload: {
+        tipo_accion: "validar_recarga",
+        recarga_id: recarga.id,
+        usuario_id: usuario?.usuario_id || usuario?.id || recarga.usuario_id,
+        usuario_nombre: usuario?.nombre || null,
+        usuario_telefono: usuario?.telefono || null,
+        numero_ref: numeroRef,
+        monto: recarga.monto,
+        periodo: recarga.periodo,
+        comprobante_url: recarga.comprobante_url || null,
+        estado_recarga: recarga.estado || "en_validacion",
+        creada_en: new Date().toISOString(),
+      },
+      estado: "sin_revisar",
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[NOTIFICACIONES] Error creando notificación admin (recarga_por_validar):", error.message);
+    return null;
+  }
+
+  console.log(`[NOTIFICACIONES] Notificación admin creada: recarga_por_validar (recarga_id=${recarga.id})`);
   return data;
 }
 
@@ -754,6 +801,36 @@ async function obtenerAlertasAdmin() {
   return success(data || []);
 }
 
+/**
+ * Eliminar una notificación por ID (admin).
+ */
+async function eliminarNotificacion(id) {
+  const { error } = await supabase
+    .from("notificaciones")
+    .delete()
+    .eq("id", id);
+
+  if (error) throw new Error(`Error eliminando notificación: ${error.message}`);
+
+  return success({ eliminada: true, id });
+}
+
+/**
+ * Eliminar múltiples notificaciones (batch, admin).
+ */
+async function eliminarNotificacionesBatch(ids) {
+  if (!ids || ids.length === 0) return success({ eliminadas: 0 });
+
+  const { error } = await supabase
+    .from("notificaciones")
+    .delete()
+    .in("id", ids);
+
+  if (error) throw new Error(`Error eliminando notificaciones: ${error.message}`);
+
+  return success({ eliminadas: ids.length });
+}
+
 module.exports = {
   crearNotificacion,
   crearNotificacionInterna,
@@ -763,15 +840,22 @@ module.exports = {
   obtenerPendientesHoyGlobal,
   actualizarEstadoNotificacion,
   marcarEnviadasBatch,
+  eliminarNotificacion,
+  eliminarNotificacionesBatch,
   // Nuevas funciones para el flujo de recargas
   crearNotificacionRecarga,
   generarMensajeInicioMes,
   generarMensajeGenerico,
   generarMensajeConfirmada,
+  generarMensajeSolicitudRecarga,
+  generarMensajePagoObligacion,
   prepararDatosNotificacion,
   existeNotificacionHoy,
   // Funciones de alertas admin
   crearAlertaAdmin,
   jobVerificarInactividad,
-  obtenerAlertasAdmin
+  obtenerAlertasAdmin,
+  // Notificaciones internas admin (sin mensaje al usuario)
+  crearNotificacionAdminFacturaPorValidar,
+  crearNotificacionAdminRecargaPorValidar
 };

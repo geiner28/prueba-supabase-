@@ -7,7 +7,7 @@ const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
 const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
-const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
+const { crearNotificacionInterna, crearNotificacionAdminRecargaPorValidar } = require("../notificaciones/notificaciones.service");
 
 // Importar funciones de notificaciones de recarga
 let crearNotificacionRecarga;
@@ -28,6 +28,7 @@ async function reportarRecarga(body, actorTipo = "bot") {
   
   // Determinar canal de origen basado en quién hace la petición
   const canalOrigen = actorTipo === "admin" ? "web_admin" : "whatsapp";
+  const estadoInicial = actorTipo === "admin" ? "aprobada" : "en_validacion";
 
   // 1. Resolver usuario
   const usuario = await resolverUsuarioPorTelefono(telefono);
@@ -53,32 +54,39 @@ async function reportarRecarga(body, actorTipo = "bot") {
     }
   }
 
-  // 3. Crear recarga en estado en_validacion
+  // 3. Crear recarga. Desde admin se aprueba automáticamente para reflejar saldo/métricas en tiempo real.
   const { data: recarga, error: insertErr } = await supabase
     .from("recargas")
     .insert({
       usuario_id: usuario.usuario_id,
       periodo: periodoNorm,
       monto,
-      estado: "en_validacion",
+      estado: estadoInicial,
       canal_origen: canalOrigen,
-      comprobante_url,
+      comprobante_url: comprobante_url || null,
       referencia_tx: referencia_tx || null,
+      validada_en: estadoInicial === "aprobada" ? new Date().toISOString() : null,
+      observaciones_admin:
+        estadoInicial === "aprobada"
+          ? "Aprobada automáticamente desde panel admin"
+          : null,
     })
     .select()
     .single();
 
   if (insertErr) throw new Error(`Error reportando recarga: ${insertErr.message}`);
 
-  // 4. Crear revisión admin
-  await supabase.from("revisiones_admin").insert({
-    tipo: "recarga",
-    estado: "pendiente",
-    usuario_id: usuario.usuario_id,
-    recarga_id: recarga.id,
-    prioridad: 2,
-    razon: "Comprobante recibido: validar recarga",
-  });
+  // 4. Crear revisión admin solo si queda en validación.
+  if (estadoInicial === "en_validacion") {
+    await supabase.from("revisiones_admin").insert({
+      tipo: "recarga",
+      estado: "pendiente",
+      usuario_id: usuario.usuario_id,
+      recarga_id: recarga.id,
+      prioridad: 2,
+      razon: "Comprobante recibido: validar recarga",
+    });
+  }
 
   // 5. Audit log
   await registrarAuditLog({
@@ -89,7 +97,14 @@ async function reportarRecarga(body, actorTipo = "bot") {
     despues: recarga,
   });
 
-  return success({ recarga_id: recarga.id, estado: "en_validacion" }, 201);
+  // 6. Notificación INTERNA para admin: recarga por validar (sin mensaje al usuario).
+  if (estadoInicial === "en_validacion") {
+    crearNotificacionAdminRecargaPorValidar({ recarga, usuario }).catch(err => {
+      console.error("[RECARGAS] Error creando notificación admin recarga_por_validar:", err.message);
+    });
+  }
+
+  return success({ recarga_id: recarga.id, estado: estadoInicial }, 201);
 }
 
 /**
@@ -146,18 +161,17 @@ async function aprobarRecarga(recargaId, body, adminId) {
     despues: updated,
   });
 
-  // Notificar al usuario que su recarga fue aprobada
-  const notificacion = await crearNotificacionInterna({
-    usuario_id: recarga.usuario_id,
-    tipo: "recarga_aprobada",
-    canal: "whatsapp",
-    payload: {
-      recarga_id: recargaId,
-      monto: recarga.monto,
-      periodo: recarga.periodo,
-      mensaje: `Tu recarga de $${Number(recarga.monto).toLocaleString()} ha sido aprobada.`,
-    },
-  });
+  // Notificar al usuario que su recarga fue aprobada (UN solo mensaje: 'recarga_confirmada').
+  // Se construye más abajo en `crearNotificacionRecarga(... 'recarga_confirmada' ...)`.
+  const notificacion = null;
+
+  // Auto-resolver notificación admin recarga_por_validar (si existe).
+  await supabase
+    .from("notificaciones")
+    .update({ estado: "revisada" })
+    .eq("tipo", "recarga_por_validar")
+    .in("estado", ["pendiente", "sin_revisar"])
+    .contains("payload", { recarga_id: recargaId });
 
   // NUEVO: Enviar notificación de recarga confirmada con el nuevo saldo
   if (crearNotificacionRecarga && prepararDatosNotificacion) {
@@ -394,26 +408,19 @@ async function rechazarRecarga(recargaId, body, adminId) {
     despues: updated,
   });
 
-  // Notificar al usuario que su recarga fue rechazada
-  const notificacion = await crearNotificacionInterna({
-    usuario_id: recarga.usuario_id,
-    tipo: "recarga_rechazada",
-    canal: "whatsapp",
-    payload: {
-      recarga_id: recargaId,
-      monto: recarga.monto,
-      motivo: body.motivo_rechazo,
-      mensaje: `Tu recarga de $${Number(recarga.monto).toLocaleString()} fue rechazada. Motivo: ${body.motivo_rechazo}`,
-    },
-  });
+  // Auto-resolver notificación admin recarga_por_validar: pasa a 'revisada'.
+  // No se crea notificación separada de rechazo; el diseño solo muestra
+  // "Recarga" (Sin revisar -> Revisada). El motivo queda en audit_log.
+  await supabase
+    .from("notificaciones")
+    .update({ estado: "revisada" })
+    .eq("tipo", "recarga_por_validar")
+    .in("estado", ["pendiente", "sin_revisar"])
+    .contains("payload", { recarga_id: recargaId });
 
   return success({
     ...updated,
-    notificacion: notificacion ? {
-      id: notificacion.id,
-      tipo: notificacion.tipo,
-      mensaje: notificacion.payload?.mensaje || "",
-    } : null,
+    notificacion: null,
   });
 }
 

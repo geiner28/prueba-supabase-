@@ -5,6 +5,22 @@ const supabase = require("../../config/supabase");
 const { success, errors } = require("../../utils/response");
 const { registrarAuditLog } = require("../../utils/auditLog");
 
+function montoSuscripcionPorPlan(plan) {
+  const planNorm = String(plan || "control").toLowerCase();
+  if (planNorm === "tranquilidad") return 10000;
+  if (planNorm === "respaldo") return 15000;
+  return 0;
+}
+
+function esPrimerMesUsuario(creadoEn, periodo) {
+  if (!creadoEn || !periodo) return true;
+  const creado = new Date(creadoEn);
+  if (Number.isNaN(creado.getTime())) return true;
+  const periodoStr = String(periodo).slice(0, 7);
+  const creadoStr = `${creado.getFullYear()}-${String(creado.getMonth() + 1).padStart(2, "0")}`;
+  return creadoStr === periodoStr;
+}
+
 /**
  * Listar usuarios con paginación y búsqueda.
  */
@@ -124,7 +140,7 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
 
   // 5. Crear "Obligación 0" — suscripción DeOne para el periodo en curso
   try {
-    await crearSuscripcionInicial(newUser.id, plan);
+    await crearSuscripcionInicial(newUser.id, plan, newUser.creado_en);
   } catch (susErr) {
     console.error("[USERS] Error creando suscripción inicial:", susErr.message);
   }
@@ -139,10 +155,16 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
  *
  * Se invoca SOLO al crear el usuario (no en updates).
  */
-async function crearSuscripcionInicial(usuarioId, plan) {
+async function crearSuscripcionInicial(usuarioId, plan, creadoEn = null, periodoForzado = null) {
   const hoy = new Date();
-  const periodo = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`;
+  const periodo = periodoForzado || `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`;
   const planLabel = (plan || "control").toString();
+  const montoPlan = montoSuscripcionPorPlan(planLabel);
+  const montoSuscripcion = esPrimerMesUsuario(creadoEn, periodo) ? 0 : montoPlan;
+  const facturaEstado = montoSuscripcion === 0 ? "pagada" : "pendiente";
+  const obligacionEstado = montoSuscripcion === 0 ? "completada" : "activa";
+  const facturasPagadas = montoSuscripcion === 0 ? 1 : 0;
+  const montoPagado = montoSuscripcion === 0 ? montoSuscripcion : 0;
 
   const { data: oblExistente } = await supabase
     .from("obligaciones")
@@ -161,15 +183,19 @@ async function crearSuscripcionInicial(usuarioId, plan) {
     .insert({
       usuario_id: usuarioId,
       descripcion: `Suscripción DeOne — ${planLabel}`,
+      servicio: "Suscripción DeOne",
       tipo_referencia: "suscripcion",
       numero_referencia: planLabel,
       receptor: "DeOne",
       grupo: 1,
       periodicidad: "mensual",
       periodo,
-      monto_total: 0,
-      monto_pagado: 0,
-      estado: "pendiente",
+      monto_total: montoSuscripcion,
+      monto_pagado: montoPagado,
+      total_facturas: 1,
+      facturas_pagadas: facturasPagadas,
+      estado: obligacionEstado,
+      completada_en: obligacionEstado === "completada" ? new Date().toISOString() : null,
     })
     .select()
     .single();
@@ -184,9 +210,10 @@ async function crearSuscripcionInicial(usuarioId, plan) {
       servicio: "Suscripción DeOne",
       etiqueta: planLabel,
       periodo,
-      monto: 0,
-      estado: "pendiente",
-      validacion_estado: "sin_validar",
+      monto: montoSuscripcion,
+      estado: facturaEstado,
+      validacion_estado: "validada",
+      validada_en: new Date().toISOString(),
       origen: "auto",
       tipo_referencia: "suscripcion",
       referencia_pago: planLabel,

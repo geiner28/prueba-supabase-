@@ -32,6 +32,18 @@ async function crearObligacion({
   const periodoNorm = normalizarPeriodo(periodo);
   if (!periodoNorm) return errors.validation("Periodo inválido");
 
+  if (Number(grupo) === 2) {
+    const { data: programacion } = await supabase
+      .from("programacion_recargas")
+      .select("cantidad_recargas")
+      .eq("usuario_id", usuario.usuario_id)
+      .single();
+
+    if (Number(programacion?.cantidad_recargas || 1) === 1) {
+      return errors.validation("No se puede asignar Grupo 2 cuando el usuario tiene una sola fecha de recarga");
+    }
+  }
+
   const { data, error } = await supabase
     .from("obligaciones")
     .insert({
@@ -277,10 +289,24 @@ async function suspenderRecordatoriosObligacion(obligacionId, motivo = "obligaci
  */
 async function emitirNotificacionCumplida(obligacion) {
   try {
-    const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
-    const meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
-    const d = new Date(obligacion.periodo);
-    const periodoLabel = `${meses[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+    const { crearNotificacionInterna, generarMensajePagoObligacion } = require("../notificaciones/notificaciones.service");
+
+    // Obtener nombre del usuario para personalizar el mensaje.
+    const { data: usuarioData } = await supabase
+      .from('usuarios')
+      .select('nombre')
+      .eq('id', obligacion.usuario_id)
+      .single();
+
+    const etiquetaPago =
+      obligacion.etiqueta || obligacion.servicio || obligacion.descripcion || 'obligación';
+    const valorPago = Number(obligacion.monto_pagado || obligacion.monto_total || 0);
+
+    const mensaje = generarMensajePagoObligacion({
+      nombre: usuarioData?.nombre || 'Usuario',
+      etiqueta: etiquetaPago,
+      valor: valorPago,
+    });
 
     await crearNotificacionInterna({
       usuario_id: obligacion.usuario_id,
@@ -290,10 +316,11 @@ async function emitirNotificacionCumplida(obligacion) {
       payload: {
         obligacion_id: obligacion.id,
         servicio: obligacion.servicio || obligacion.descripcion || null,
+        etiqueta: etiquetaPago,
         periodo: obligacion.periodo,
         monto_total: Number(obligacion.monto_total || 0),
         monto_pagado: Number(obligacion.monto_pagado || 0),
-        mensaje: `✅ ¡Tu obligación de ${periodoLabel} fue completada!`,
+        mensaje,
       },
     });
   } catch (err) {

@@ -32,7 +32,7 @@ const upsertUsuarioAdminSchema = z.object({
   direccion: z.string().optional(),
   plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
   // Nuevos campos del rediseño 2026-04 (mockup modal "Agregar usuario")
-  tipo_identificacion: z.enum(["CC", "NIT"]).optional(),
+  tipo_identificacion: z.enum(["CC", "NIT", "CE"]).optional(),
   numero_identificacion: z.string().max(32).optional(),
   ciudad: z.string().max(80).optional(),
 });
@@ -46,7 +46,7 @@ const updateUsuarioAdminSchema = z.object({
   direccion: z.string().optional().nullable(),
   plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
   activo: z.boolean().optional(),
-  tipo_identificacion: z.enum(["CC", "NIT"]).nullable().optional(),
+  tipo_identificacion: z.enum(["CC", "NIT", "CE"]).nullable().optional(),
   numero_identificacion: z.string().max(32).nullable().optional(),
   ciudad: z.string().max(80).nullable().optional(),
 });
@@ -58,6 +58,7 @@ const queryHistorialSchema = z.object({
   usuario_id: z.string().uuid().optional(),
   desde: z.string().optional(),
   hasta: z.string().optional(),
+  search: z.string().optional(),
 });
 
 const queryTransaccionesSchema = z.object({

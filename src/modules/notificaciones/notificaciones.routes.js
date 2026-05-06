@@ -98,4 +98,28 @@ router.get("/admin/alertas", authAdmin, async (req, res, next) => {
   }
 });
 
+// DELETE /api/notificaciones/:id — Eliminar una notificación (admin)
+router.delete("/:id", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.eliminarNotificacion(req.params.id);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/notificaciones/batch — Eliminar múltiples notificaciones (admin)
+router.delete("/batch", authAdmin, async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ ok: false, data: null, error: { code: "VALIDATION_ERROR", message: "Se requiere un array de IDs" } });
+    }
+    const result = await service.eliminarNotificacionesBatch(ids);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

@@ -103,13 +103,20 @@ async function jobEvaluacionRecargas() {
             );
             
             if (datos) {
-              await crearNotificacionRecarga(
+              const notifCreada = await crearNotificacionRecarga(
                 resultado.usuarioId,
                 tipoNotificacion,
                 datos
               );
-              notificacionesCreadas++;
-              console.log(`[JOBS] Notificación creada: ${tipoNotificacion}`);
+              if (notifCreada) {
+                notificacionesCreadas++;
+                console.log(`[JOBS] ✓ Notificación creada: ${tipoNotificacion} para usuario ${resultado.usuarioId}`);
+              } else {
+                console.error(`[JOBS] ✗ Falló creación de notificación: ${tipoNotificacion} para usuario ${resultado.usuarioId}`);
+                errores++;
+              }
+            } else {
+              console.warn(`[JOBS] Sin datos para notificación usuario ${resultado.usuarioId} periodo ${obligacion.periodo}`);
             }
           } else {
             console.log(`[JOBS] Notificación ya enviada hoy para usuario ${resultado.usuarioId}, omitiendo`);

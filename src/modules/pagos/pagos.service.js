@@ -9,7 +9,7 @@ const { normalizarPeriodo } = require("../../utils/periodo");
 const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
 const { actualizarContadoresObligacion } = require("../facturas/facturas.service");
-const { crearNotificacionInterna } = require("../notificaciones/notificaciones.service");
+const { crearNotificacionInterna, generarMensajePagoObligacion } = require("../notificaciones/notificaciones.service");
 
 /**
  * Crear pago para una factura validada.
@@ -153,21 +153,40 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
 
   // 3. Verificar y auto-completar obligación
   let obligacionEstado = null;
-  let nuevaObligacionId = null;
+  let nuevasObligacionesIds = [];
   const obligacionId = pago.facturas?.obligacion_id;
   if (obligacionId) {
     await actualizarContadoresObligacion(obligacionId);
     const { data: obl } = await supabase.from("obligaciones").select("*").eq("id", obligacionId).single();
     obligacionEstado = obl?.estado;
 
-    // Si la obligación se completó, crear la del siguiente mes automáticamente
+    // Si la obligación se completó, evaluar cierre total del mes y, si aplica,
+    // crear obligaciones/facturas del siguiente período automáticamente.
     if (obligacionEstado === "completada" && obl) {
-      nuevaObligacionId = await crearObligacionSiguienteMes(obl);
+      nuevasObligacionesIds = await crearSiguienteMesSiCorresponde(obl.usuario_id, obl.periodo);
 
       // Única notificación permitida hacia el usuario para este flujo:
       // 'obligacion_cumplida' (campaña bot — "obligación pagada").
-      const periodoLabel = formatearPeriodo(obl.periodo);
-      const mensajeCumplida = `✅ ¡Tu obligación de ${periodoLabel} fue completada!`;
+      const { data: usuarioObl } = await supabase
+        .from('usuarios')
+        .select('nombre')
+        .eq('id', pago.usuario_id)
+        .single();
+
+      // Etiqueta y monto: preferir factura/obligación, caer a defaults.
+      const etiquetaPago =
+        pago.facturas?.etiqueta ||
+        obl.etiqueta ||
+        obl.servicio ||
+        obl.descripcion ||
+        'obligación';
+      const valorPago = Number(obl.monto_pagado || obl.monto_total || pago.monto_aplicado || 0);
+
+      const mensajeCumplida = generarMensajePagoObligacion({
+        nombre: usuarioObl?.nombre || 'Usuario',
+        etiqueta: etiquetaPago,
+        valor: valorPago,
+      });
 
       await crearNotificacionInterna({
         usuario_id: pago.usuario_id,
@@ -177,10 +196,11 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
         payload: {
           obligacion_id: obligacionId,
           servicio: obl.servicio || obl.descripcion || null,
+          etiqueta: etiquetaPago,
           periodo: obl.periodo,
           monto_total: Number(obl.monto_total || 0),
           monto_pagado: Number(obl.monto_pagado || 0),
-          nueva_obligacion_id: nuevaObligacionId,
+          nuevas_obligaciones_ids: nuevasObligacionesIds,
           mensaje: mensajeCumplida,
         },
       });
@@ -213,7 +233,7 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
     factura_estado: "pagada",
     obligacion_estado: obligacionEstado,
     obligacion_completada: obligacionEstado === "completada",
-    nueva_obligacion_id: nuevaObligacionId,
+    nuevas_obligaciones_ids: nuevasObligacionesIds,
     notificacion: notificacion ? {
       id: notificacion.id,
       tipo: notificacion.tipo,
@@ -260,120 +280,222 @@ async function fallarPago(pagoId, body, actorTipo = "admin", actorId = null) {
 }
 
 /**
- * Crear automáticamente la obligación del siguiente mes
- * cuando la actual se completa.
+ * Crear automáticamente obligaciones/facturas del siguiente mes
+ * cuando TODAS las obligaciones del periodo estén completas.
  */
-async function crearObligacionSiguienteMes(obligacionCompletada) {
+async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual) {
   try {
-    const periodoActual = new Date(obligacionCompletada.periodo);
-    const siguienteMes = new Date(periodoActual);
+    const periodoNorm = normalizarPeriodo(periodoActual);
+    if (!periodoNorm) return [];
+
+    const { data: obligacionesPeriodo, error: oblErr } = await supabase
+      .from("obligaciones")
+      .select("id, usuario_id, descripcion, periodo, servicio, tipo_referencia, pagina_pago, periodicidad, receptor, grupo, estado")
+      .eq("usuario_id", usuarioId)
+      .eq("periodo", periodoNorm)
+      .neq("estado", "cancelada");
+
+    if (oblErr) {
+      console.error("[PAGOS] Error consultando obligaciones del periodo:", oblErr.message);
+      return [];
+    }
+
+    if (!obligacionesPeriodo || obligacionesPeriodo.length === 0) {
+      return [];
+    }
+
+    const obligacionIds = obligacionesPeriodo.map((o) => o.id);
+    const { data: facturasPeriodo, error: facErr } = await supabase
+      .from("facturas")
+      .select("id, obligacion_id, servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo, estado, validacion_estado")
+      .in("obligacion_id", obligacionIds)
+      .neq("validacion_estado", "rechazada");
+
+    if (facErr) {
+      console.error("[PAGOS] Error consultando facturas del periodo:", facErr.message);
+      return [];
+    }
+
+    const facturasPorObligacion = new Map();
+    for (const factura of facturasPeriodo || []) {
+      if (!facturasPorObligacion.has(factura.obligacion_id)) {
+        facturasPorObligacion.set(factura.obligacion_id, []);
+      }
+      facturasPorObligacion.get(factura.obligacion_id).push(factura);
+    }
+
+    // Solo cuentan obligaciones con al menos una factura activa.
+    const obligacionesConFacturas = obligacionesPeriodo.filter((o) => (facturasPorObligacion.get(o.id) || []).length > 0);
+    if (obligacionesConFacturas.length === 0) {
+      return [];
+    }
+
+    // Cierre de mes: todas las obligaciones con facturas deben estar completadas
+    // (o, equivalentemente, con todas sus facturas en estado pagada).
+    const mesCompletado = obligacionesConFacturas.every((o) => {
+      const facturas = facturasPorObligacion.get(o.id) || [];
+      const todasPagadas = facturas.length > 0 && facturas.every((f) => f.estado === "pagada");
+      return o.estado === "completada" || todasPagadas;
+    });
+
+    if (!mesCompletado) {
+      return [];
+    }
+
+    const basePeriodo = new Date(periodoNorm);
+    const siguienteMes = new Date(basePeriodo);
     siguienteMes.setUTCMonth(siguienteMes.getUTCMonth() + 1);
     const nuevoPeriodo = `${siguienteMes.getUTCFullYear()}-${String(siguienteMes.getUTCMonth() + 1).padStart(2, "0")}-01`;
 
-    // Verificar que no exista ya una obligación para el siguiente mes
-    const { data: existente } = await supabase
-      .from("obligaciones")
-      .select("id")
-      .eq("usuario_id", obligacionCompletada.usuario_id)
-      .eq("periodo", nuevoPeriodo)
-      .single();
+    const nuevasObligacionesIds = [];
+    for (const obligacionActual of obligacionesConFacturas) {
+      const facturasOrigen = facturasPorObligacion.get(obligacionActual.id) || [];
 
-    if (existente) {
-      console.log(`[PAGOS] Obligación del periodo ${nuevoPeriodo} ya existe para usuario ${obligacionCompletada.usuario_id}`);
-      return existente.id;
-    }
+      // Buscar obligación equivalente en el siguiente mes para evitar duplicados.
+      let matchQuery = supabase
+        .from("obligaciones")
+        .select("id")
+        .eq("usuario_id", usuarioId)
+        .eq("periodo", nuevoPeriodo)
+        .limit(1);
 
-    // Formatear nombre del periodo
-    const meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
-    const mesNombre = meses[siguienteMes.getUTCMonth()];
-    const anio = siguienteMes.getUTCFullYear();
-    const descripcion = `Pagos de ${mesNombre} ${anio}`;
-
-    // Crear nueva obligación
-    const { data: nueva, error } = await supabase
-      .from("obligaciones")
-      .insert({
-        usuario_id: obligacionCompletada.usuario_id,
-        descripcion,
-        periodo: nuevoPeriodo,
-        servicio: descripcion,
-        tipo_referencia: "periodo",
-        numero_referencia: `${nuevoPeriodo}-auto-${Date.now()}`,
-        estado: "activa",
-        total_facturas: 0,
-        facturas_pagadas: 0,
-        monto_total: 0,
-        monto_pagado: 0,
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error("[PAGOS] Error creando obligación siguiente:", error.message);
-      return null;
-    }
-
-    // Copiar las facturas de la obligación completada al nuevo periodo
-    // Incluye más campos: etiqueta, archivo_url, tipo_referencia, referencia_pago
-    const { data: facturasAntiguas } = await supabase
-      .from("facturas")
-      .select("servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo")
-      .eq("obligacion_id", obligacionCompletada.id)
-      .neq("validacion_estado", "rechazada");
-
-    if (facturasAntiguas && facturasAntiguas.length > 0) {
-      const nuevasFacturas = facturasAntiguas.map(f => ({
-        usuario_id: obligacionCompletada.usuario_id,
-        obligacion_id: nueva.id,
-        servicio: f.servicio,
-        periodo: nuevoPeriodo,
-        monto: f.monto,
-        estado: "pendiente",
-        validacion_estado: "sin_validar",
-        origen: "auto",
-        extraccion_estado: "ok",
-        etiqueta: f.etiqueta || null,
-        archivo_url: f.archivo_url || null,
-        tipo_referencia: f.tipo_referencia || null,
-        referencia_pago: f.referencia_pago || null,
-        grupo: f.grupo || null,
-      }));
-
-      const { error: insertErr } = await supabase
-        .from("facturas")
-        .insert(nuevasFacturas);
-
-      if (insertErr) {
-        console.error("[PAGOS] Error copiando facturas al nuevo periodo:", insertErr.message);
+      if (obligacionActual.descripcion != null) {
+        matchQuery = matchQuery.eq("descripcion", obligacionActual.descripcion);
       } else {
-        // Actualizar contadores
-        await supabase
-          .from("obligaciones")
-          .update({
-            total_facturas: nuevasFacturas.length,
-            monto_total: nuevasFacturas.reduce((s, f) => s + Number(f.monto), 0),
-          })
-          .eq("id", nueva.id);
+        matchQuery = matchQuery.is("descripcion", null);
       }
+
+      if (obligacionActual.servicio != null) {
+        matchQuery = matchQuery.eq("servicio", obligacionActual.servicio);
+      } else {
+        matchQuery = matchQuery.is("servicio", null);
+      }
+
+      if (obligacionActual.grupo != null) {
+        matchQuery = matchQuery.eq("grupo", obligacionActual.grupo);
+      } else {
+        matchQuery = matchQuery.is("grupo", null);
+      }
+
+      let { data: siguienteObligacion } = await matchQuery.maybeSingle();
+
+      if (!siguienteObligacion) {
+        const { data: creada, error: createErr } = await supabase
+          .from("obligaciones")
+          .insert({
+            usuario_id: usuarioId,
+            descripcion: obligacionActual.descripcion,
+            periodo: nuevoPeriodo,
+            servicio: obligacionActual.servicio || obligacionActual.descripcion,
+            tipo_referencia: obligacionActual.tipo_referencia || "periodo",
+            numero_referencia: `${nuevoPeriodo}-auto-${obligacionActual.id.slice(0, 8)}`,
+            pagina_pago: obligacionActual.pagina_pago || null,
+            periodicidad: obligacionActual.periodicidad || "mensual",
+            receptor: obligacionActual.receptor || null,
+            grupo: obligacionActual.grupo || null,
+            estado: "activa",
+            total_facturas: 0,
+            facturas_pagadas: 0,
+            monto_total: 0,
+            monto_pagado: 0,
+          })
+          .select()
+          .single();
+
+        if (createErr) {
+          console.error("[PAGOS] Error creando obligación siguiente:", createErr.message);
+          continue;
+        }
+
+        siguienteObligacion = creada;
+      }
+
+      const { data: facturasDestino } = await supabase
+        .from("facturas")
+        .select("servicio, monto, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo")
+        .eq("obligacion_id", siguienteObligacion.id);
+
+      const firmaFactura = (f) => [
+        f.servicio || "",
+        Number(f.monto || 0),
+        f.etiqueta || "",
+        f.archivo_url || "",
+        f.tipo_referencia || "",
+        f.referencia_pago || "",
+        f.grupo || "",
+      ].join("|");
+
+      const existentes = new Set((facturasDestino || []).map(firmaFactura));
+      const nuevasFacturas = facturasOrigen
+        .filter((f) => !existentes.has(firmaFactura(f)))
+        .map((f) => ({
+          usuario_id: usuarioId,
+          obligacion_id: siguienteObligacion.id,
+          servicio: f.servicio,
+          periodo: nuevoPeriodo,
+          monto: f.monto,
+          estado: "pendiente",
+          validacion_estado: "sin_validar",
+          origen: "auto",
+          extraccion_estado: "ok",
+          etiqueta: f.etiqueta || null,
+          archivo_url: f.archivo_url || null,
+          tipo_referencia: f.tipo_referencia || null,
+          referencia_pago: f.referencia_pago || null,
+          grupo: f.grupo || null,
+        }));
+
+      if (nuevasFacturas.length > 0) {
+        const { error: insertErr } = await supabase
+          .from("facturas")
+          .insert(nuevasFacturas);
+
+        if (insertErr) {
+          console.error("[PAGOS] Error copiando facturas al nuevo periodo:", insertErr.message);
+        }
+      }
+
+      // Recalcular contadores de la obligación destino
+      const { data: facturasDestinoFinal } = await supabase
+        .from("facturas")
+        .select("monto, estado")
+        .eq("obligacion_id", siguienteObligacion.id)
+        .neq("validacion_estado", "rechazada");
+
+      const totalFacturas = (facturasDestinoFinal || []).length;
+      const facturasPagadas = (facturasDestinoFinal || []).filter((f) => f.estado === "pagada").length;
+      const montoTotal = (facturasDestinoFinal || []).reduce((s, f) => s + Number(f.monto || 0), 0);
+      const montoPagado = (facturasDestinoFinal || [])
+        .filter((f) => f.estado === "pagada")
+        .reduce((s, f) => s + Number(f.monto || 0), 0);
+
+      await supabase
+        .from("obligaciones")
+        .update({
+          total_facturas: totalFacturas,
+          facturas_pagadas: facturasPagadas,
+          monto_total: montoTotal,
+          monto_pagado: montoPagado,
+          estado: totalFacturas > 0 && facturasPagadas === totalFacturas ? "completada" : "activa",
+        })
+        .eq("id", siguienteObligacion.id);
+
+      nuevasObligacionesIds.push(siguienteObligacion.id);
+
+      await registrarAuditLog({
+        actor_tipo: "sistema",
+        accion: "auto_crear_obligacion_siguiente",
+        entidad: "obligaciones",
+        entidad_id: siguienteObligacion.id,
+        antes: { obligacion_origen_id: obligacionActual.id, periodo_origen: periodoNorm },
+      });
     }
 
-    await registrarAuditLog({
-      actor_tipo: "sistema",
-      accion: "auto_crear_obligacion_siguiente",
-      entidad: "obligaciones",
-      entidad_id: nueva.id,
-      antes: { obligacion_completada_id: obligacionCompletada.id },
-      despues: nueva,
-    });
-
-    // No se notifica al usuario sobre la nueva obligación: solo se le envían
-    // mensajes para 'pedir recarga', 'recarga validada' y 'obligación pagada'.
-
-    console.log(`[PAGOS] ✅ Obligación auto-creada: ${nueva.id} para periodo ${nuevoPeriodo}`);
-    return nueva.id;
+    console.log(`[PAGOS] ✅ Cierre de mes ${periodoNorm}: ${nuevasObligacionesIds.length} obligaciones listas para ${nuevoPeriodo}`);
+    return nuevasObligacionesIds;
   } catch (err) {
-    console.error("[PAGOS] Error en crearObligacionSiguienteMes:", err.message);
-    return null;
+    console.error("[PAGOS] Error en crearSiguienteMesSiCorresponde:", err.message);
+    return [];
   }
 }
 
@@ -387,4 +509,4 @@ function formatearPeriodo(periodo) {
   return `${meses[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-module.exports = { crearPago, confirmarPago, fallarPago };
+module.exports = { crearPago, confirmarPago, fallarPago, crearSiguienteMesSiCorresponde };

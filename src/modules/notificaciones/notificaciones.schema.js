@@ -34,7 +34,7 @@ const crearNotificacionMasivaSchema = z.object({
 });
 
 const actualizarEstadoNotificacionSchema = z.object({
-  estado: z.enum(["enviada", "fallida", "leida"]),
+  estado: z.enum(["pendiente", "enviada", "entregada", "leida", "fallida", "sin_respuesta", "rechazada", "revisada", "sin_revisar"]),
   ultimo_error: z.string().optional(),
 });
 

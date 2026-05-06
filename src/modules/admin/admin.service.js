@@ -7,6 +7,7 @@ const { success, errors } = require("../../utils/response");
 const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
 const { crearSuscripcionInicial } = require("../users/users.service");
+const { crearSiguienteMesSiCorresponde } = require("../pagos/pagos.service");
 const {
   distribuirFacturasEnCuotas,
   adaptarCuotasAProgamacion,
@@ -132,6 +133,16 @@ async function perfilCompletoCliente(telefono, periodo = null) {
 
   const userId = usuario.usuario_id;
 
+  const { data: userData } = await supabase
+    .from("usuarios")
+    .select("*, ajustes_usuario(*)")
+    .eq("id", userId)
+    .single();
+
+  if (!userData) {
+    return errors.notFound("Usuario no encontrado con ese teléfono");
+  }
+
   // Determinar periodo: si no se proporciona, usar mes actual
   let periodoTarget = periodo;
   if (!periodoTarget) {
@@ -143,9 +154,23 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     periodoTarget = normalizarPeriodo(periodoTarget);
   }
 
+  // Seguridad de consistencia: si el periodo consultado ya quedó completamente
+  // pagado, garantizar la creación automática del siguiente mes.
+  try {
+    await crearSiguienteMesSiCorresponde(userId, periodoTarget);
+  } catch (err) {
+    console.error("[ADMIN] Error evaluando cierre mensual automático:", err.message);
+  }
+
+  // Garantizar que exista la obligación/factura de suscripción del período consultado.
+  try {
+    await crearSuscripcionInicial(userId, userData.plan, userData.creado_en, periodoTarget);
+  } catch (err) {
+    console.error("[ADMIN] Error garantizando suscripción del periodo:", err.message);
+  }
+
   // Obtener datos en paralelo
   const [
-    { data: userData },
     { data: obligacionesTotal },
     { data: obligacionesMes },
     { data: recargasTotal },
@@ -155,7 +180,6 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     { data: notificaciones },
     { data: programacionRecargasData },
   ] = await Promise.all([
-    supabase.from("usuarios").select("*, ajustes_usuario(*)").eq("id", userId).single(),
     // Obligaciones totales (para resumen global)
     supabase.from("obligaciones").select("*, facturas(*)").eq("usuario_id", userId).order("creado_en", { ascending: false }),
     // Obligaciones del mes
@@ -212,13 +236,25 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     f => f.validacion_estado === "validada"
   );
 
+  // Pendientes del mes: TODAS las facturas no pagadas del periodo
+  // (incluye sin_validar, validadas y rechazadas que aún no se pagan).
+  // Esto coincide con la tab "Pendientes" del frontend (estado !== 'pagada').
   const facturasPendienteMes = allFacturasMes.filter(
-    f => f.validacion_estado === "validada" && f.estado !== "pagada"
+    f => f.estado !== "pagada"
   );
 
   const totalPendienteMes = facturasPendienteMes.reduce(
     (sum, f) => sum + Number(f.monto || 0), 0
   );
+
+  // Desglose adicional para la UI (validadas vs sin_validar pendientes)
+  const totalPendienteValidadasMes = facturasPendienteMes
+    .filter(f => f.validacion_estado === "validada")
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+
+  const totalPendienteSinValidarMes = facturasPendienteMes
+    .filter(f => f.validacion_estado === "sin_validar")
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
 
   // Cantidad de recargas aprobadas del mes
   const recargasAprobadaCountMes = (recargasMes || []).length;
@@ -280,14 +316,17 @@ async function perfilCompletoCliente(telefono, periodo = null) {
   // Calcular progreso de obligaciones del mes
   const obligacionesDelMesConProgreso = (obligacionesMes || []).map(obl => {
     const facturas = (obl.facturas || []).map(f => {
-      // Asignar grupo basado en cálculo previo
-      let grupo = null;
-      if (idsGrupo1.has(f.id)) grupo = 1;
-      else if (idsGrupo2.has(f.id)) grupo = 2;
+      // Priorizar el grupo persistido en BD (editable por admin).
+      // Si no existe, usar el cálculo de cuotas como fallback visual.
+      let grupo = f.grupo ?? null;
+      if (grupo == null) {
+        if (idsGrupo1.has(f.id)) grupo = 1;
+        else if (idsGrupo2.has(f.id)) grupo = 2;
+      }
       
       return {
         ...f,
-        grupo, // Viene del cálculo de distribuirFacturasEnCuotas
+        grupo,
       };
     });
     
@@ -342,6 +381,8 @@ async function perfilCompletoCliente(telefono, periodo = null) {
       total_recargas_aprobadas_mes: totalRecargasAprobadasMes,
       total_pagos_realizados_mes: totalPagosRealizadosMes,
       total_pendiente_mes: totalPendienteMes,
+      total_pendiente_validadas_mes: totalPendienteValidadasMes,
+      total_pendiente_sin_validar_mes: totalPendienteSinValidarMes,
       facturas_validadas_count_mes: facturasValidadasMes.length,
       recargas_aprobadas_count_mes: recargasAprobadaCountMes,
     },
@@ -627,6 +668,48 @@ async function dashboard(params = {}) {
 }
 
 /**
+ * Obtener periodos (año/mes) disponibles para dashboard
+ * basados SOLO en facturas reales (excluye suscripción y placeholders).
+ */
+async function dashboardPeriodosDisponibles() {
+  const { data, error } = await supabase
+    .from("facturas")
+    .select("periodo, tipo_referencia, estado")
+    .not("periodo", "is", null)
+    .neq("tipo_referencia", "suscripcion")
+    .neq("estado", "sin_factura");
+
+  if (error) throw new Error(`Error obteniendo periodos dashboard: ${error.message}`);
+
+  const periodosSet = new Set();
+  for (const row of data || []) {
+    try {
+      const normalizado = normalizarPeriodo(row.periodo);
+      const y = normalizado.slice(0, 4);
+      const m = normalizado.slice(5, 7);
+      periodosSet.add(`${y}-${m}`);
+    } catch (e) {
+      // Ignorar periodos inválidos y continuar con los válidos
+    }
+  }
+
+  const periodos = Array.from(periodosSet)
+    .sort((a, b) => b.localeCompare(a))
+    .map((ym) => {
+      const [yearStr, monthStr] = ym.split("-");
+      const year = Number(yearStr);
+      const month = Number(monthStr);
+      return {
+        year,
+        month,
+        periodo: `${yearStr}-${monthStr}-01`,
+      };
+    });
+
+  return success({ periodos });
+}
+
+/**
  * Upsert usuario con campos extendidos (admin-only)
  * - Acepta: usuario_id (opcional), telefono, nombre, apellido, correo, direccion, plan
  * - Si viene usuario_id: busca por ID (permite cambiar teléfono)
@@ -755,7 +838,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
 
   // 6. Crear "Obligación 0" — suscripción DeOne para el periodo en curso
   try {
-    await crearSuscripcionInicial(newUser.id, planUsuario);
+    await crearSuscripcionInicial(newUser.id, planUsuario, newUser.creado_en);
   } catch (susErr) {
     console.error("[ADMIN-USERS] Error creando suscripción inicial:", susErr.message);
   }
@@ -833,6 +916,9 @@ async function updateUsuarioAdmin(userId, fields) {
     apellido: updated.apellido,
     correo: updated.correo,
     direccion: updated.direccion,
+    tipo_identificacion: updated.tipo_identificacion,
+    numero_identificacion: updated.numero_identificacion,
+    ciudad: updated.ciudad,
     plan: updated.plan,
     activo: updated.activo,
   });
@@ -1783,7 +1869,7 @@ async function obtenerNotificacionesAcciones(filters = {}) {
  * Historial unificado para el admin panel.
  * Une recargas, obligaciones, pagos y usuarios en una sola timeline.
  */
-async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde, hasta }) {
+async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde, hasta, search }) {
   try {
     const fuentes = [];
 
@@ -1879,14 +1965,19 @@ async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde
       });
     }
 
+    // ── Filtrar por search (nombre de usuario) ──
+    const fuentesFiltradas = search
+      ? fuentes.filter((f) => f.usuario_nombre && f.usuario_nombre.toLowerCase().includes(search.toLowerCase()))
+      : fuentes;
+
     // ── Ordenar por fecha descendente ──
-    fuentes.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+    fuentesFiltradas.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
 
     // ── Paginar ──
-    const total = fuentes.length;
+    const total = fuentesFiltradas.length;
     const total_pages = Math.ceil(total / limit);
     const offset = (page - 1) * limit;
-    const historial = fuentes.slice(offset, offset + limit);
+    const historial = fuentesFiltradas.slice(offset, offset + limit);
 
     return success({ historial, total, page, limit, total_pages });
   } catch (err) {
@@ -1986,6 +2077,7 @@ module.exports = {
   perfilCompletoCliente,
   historialPagos,
   dashboard,
+  dashboardPeriodosDisponibles,
   upsertUsuarioAdmin,
   updateUsuarioAdmin,
   getUsuarioByTelefono,
