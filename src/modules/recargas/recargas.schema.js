@@ -9,6 +9,9 @@ const reportarRecargaSchema = z.object({
   monto: z.number().positive("Monto debe ser positivo"),
   comprobante_url: z.string().min(1).optional(),
   referencia_tx: z.string().optional(),
+  // Campos opcionales para actualizar el perfil del usuario en el mismo llamado
+  nombre: z.string().max(120).optional(),
+  apellido: z.string().max(120).optional(),
 });
 
 const aprobarRecargaSchema = z.object({

@@ -247,6 +247,15 @@ async function verificarRecordatorios(body) {
   const usuario = await resolverUsuarioPorTelefono(telefono);
   if (!usuario) return errors.notFound("Usuario no encontrado");
 
+  // Obtener nombre del usuario para incluirlo en el mensaje de notificación
+  const nombreUsuario = (() => {
+    const u = usuario.usuario;
+    if (!u) return null;
+    // Si nombre es igual al teléfono (valor por defecto), no usarlo como nombre visible
+    const n = u.nombre && u.nombre !== u.telefono ? u.nombre : null;
+    return n || null;
+  })();
+
   const hoy = new Date().toISOString().split("T")[0];
 
   // 1. Buscar solicitudes pendientes con recordatorio no enviado y fecha <= hoy
@@ -283,6 +292,8 @@ async function verificarRecordatorios(body) {
 
     if (disponible < faltante) {
       // No tiene saldo suficiente → generar solicitud de recarga (tipo canónico)
+      const montoFaltante = faltante - disponible;
+      const saludo = nombreUsuario ? `Hola ${nombreUsuario} 👋🏼\n\n` : '';
       await crearNotificacionInterna({
         usuario_id: usuario.usuario_id,
         tipo: "solicitud_recarga",
@@ -291,9 +302,11 @@ async function verificarRecordatorios(body) {
           solicitud_id: sol.id,
           numero_cuota: sol.numero_cuota,
           total_cuotas: sol.total_cuotas,
-          monto_faltante: faltante - disponible,
+          monto_faltante: montoFaltante,
+          valor_recarga: montoFaltante,
           fecha_limite: sol.fecha_limite,
-          mensaje: `Recuerda que tienes una recarga pendiente de $${Number(faltante - disponible).toLocaleString()} antes del ${sol.fecha_limite}. Cuota ${sol.numero_cuota} de ${sol.total_cuotas}.`,
+          nombre_usuario: nombreUsuario,
+          mensaje: `${saludo}Recuerda que tienes una recarga pendiente de $${Number(montoFaltante).toLocaleString()} antes del ${sol.fecha_limite}. Cuota ${sol.numero_cuota} de ${sol.total_cuotas}.`,
         },
       });
 

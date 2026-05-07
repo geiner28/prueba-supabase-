@@ -24,7 +24,7 @@ try {
  * Reportar recarga (desde el bot).
  */
 async function reportarRecarga(body, actorTipo = "bot") {
-  const { telefono, periodo, monto, comprobante_url, referencia_tx } = body;
+  const { telefono, periodo, monto, comprobante_url, referencia_tx, nombre, apellido } = body;
   
   // Determinar canal de origen basado en quién hace la petición
   const canalOrigen = actorTipo === "admin" ? "web_admin" : "whatsapp";
@@ -33,6 +33,17 @@ async function reportarRecarga(body, actorTipo = "bot") {
   // 1. Resolver usuario
   const usuario = await resolverUsuarioPorTelefono(telefono);
   if (!usuario) return errors.notFound("Usuario no encontrado con ese teléfono");
+
+  // 1b. Actualizar nombre/apellido si el bot los envía (mejora el perfil en el mismo llamado)
+  const profileUpdates = {};
+  if (nombre !== undefined && nombre !== null && nombre !== "") profileUpdates.nombre = nombre;
+  if (apellido !== undefined && apellido !== null && apellido !== "") profileUpdates.apellido = apellido;
+  if (Object.keys(profileUpdates).length > 0) {
+    await supabase.from("usuarios").update(profileUpdates).eq("id", usuario.usuario_id);
+    // Reflejar los cambios en el objeto local para que la notificación use el nombre actualizado
+    if (profileUpdates.nombre) usuario.usuario.nombre = profileUpdates.nombre;
+    if (profileUpdates.apellido) usuario.usuario.apellido = profileUpdates.apellido;
+  }
 
   const periodoNorm = normalizarPeriodo(periodo);
   if (!periodoNorm) return errors.validation("Periodo inválido");

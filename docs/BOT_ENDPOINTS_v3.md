@@ -62,6 +62,10 @@ Registra o actualiza un usuario por teléfono. Idempotente — se puede llamar e
 | `nombre` | string | No | Nombre del usuario |
 | `apellido` | string | No | Apellido del usuario |
 | `correo` | string | No | Email válido |
+| `tipo_identificacion` | string | No | `"CC"`, `"NIT"` o `"CE"` |
+| `numero_identificacion` | string | No | Número de cédula/NIT (máx 32 caracteres) |
+| `ciudad` | string | No | Ciudad de residencia (máx 80 caracteres) |
+| `direccion` | string | No | Dirección de residencia (máx 255 caracteres) |
 
 **Ejemplo:**
 ```http
@@ -72,7 +76,11 @@ Content-Type: application/json
 {
   "telefono": "573046757626",
   "nombre": "Laura",
-  "apellido": "Duran"
+  "apellido": "Duran",
+  "tipo_identificacion": "CC",
+  "numero_identificacion": "1020304050",
+  "ciudad": "Medellín",
+  "direccion": "Calle 45 #32-10"
 }
 ```
 
@@ -259,6 +267,10 @@ Registra que el usuario envió un comprobante de depósito. Queda en `"en_valida
 | `monto` | number | ✅ | Positivo |
 | `comprobante_url` | string | ✅ | URL del comprobante |
 | `referencia_tx` | string | No | Referencia bancaria. Previene duplicados |
+| `nombre` | string | No | Si se envía, actualiza el nombre del usuario en el mismo llamado |
+| `apellido` | string | No | Si se envía, actualiza el apellido del usuario en el mismo llamado |
+
+> Si el usuario aún no tiene un nombre real registrado (solo su número de teléfono como nombre por defecto), el bot puede enviarlo aquí en el mismo llamado junto con el comprobante.
 
 **Respuesta (201):**
 ```json
