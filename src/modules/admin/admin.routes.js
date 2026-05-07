@@ -309,4 +309,18 @@ router.post("/jobs/evaluacion-recargas", authAdmin, async (req, res, next) => {
   }
 });
 
+// POST /api/admin/clientes/:telefono/crear-siguiente-mes — Crear manualmente el siguiente mes
+router.post("/clientes/:telefono/crear-siguiente-mes", authAdmin, async (req, res, next) => {
+  try {
+    const { periodo } = req.body;
+    if (!periodo) {
+      return res.status(400).json({ ok: false, message: "Se requiere el campo 'periodo' (YYYY-MM-DD)" });
+    }
+    const result = await service.crearSiguienteMesManual(req.params.telefono, periodo);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

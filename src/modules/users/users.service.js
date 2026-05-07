@@ -12,6 +12,11 @@ function montoSuscripcionPorPlan(plan) {
   return 0;
 }
 
+function planTieneSuscripcion(plan) {
+  const planNorm = String(plan || "control").toLowerCase();
+  return planNorm === "tranquilidad" || planNorm === "respaldo";
+}
+
 function esPrimerMesUsuario(creadoEn, periodo) {
   if (!creadoEn || !periodo) return true;
   const creado = new Date(creadoEn);
@@ -143,11 +148,13 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
     console.error("[USERS] Error creando programacion_recargas:", progErr.message);
   }
 
-  // 5. Crear "Obligación 0" — suscripción DeOne para el periodo en curso
-  try {
-    await crearSuscripcionInicial(newUser.id, plan, newUser.creado_en);
-  } catch (susErr) {
-    console.error("[USERS] Error creando suscripción inicial:", susErr.message);
+  // 5. Crear "Obligación 0" SOLO para planes con suscripción (tranquilidad/respaldo)
+  if (planTieneSuscripcion(plan)) {
+    try {
+      await crearSuscripcionInicial(newUser.id, plan, newUser.creado_en);
+    } catch (susErr) {
+      console.error("[USERS] Error creando suscripción inicial:", susErr.message);
+    }
   }
 
   return success({ usuario_id: newUser.id, creado: true }, 201);
@@ -161,9 +168,14 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
  * Se invoca SOLO al crear el usuario (no en updates).
  */
 async function crearSuscripcionInicial(usuarioId, plan, creadoEn = null, periodoForzado = null) {
+  if (!planTieneSuscripcion(plan)) {
+    // Plan control no genera obligación de suscripción.
+    return null;
+  }
+
   const hoy = new Date();
   const periodo = periodoForzado || `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`;
-  const planLabel = (plan || "control").toString();
+  const planLabel = String(plan || "control").toLowerCase();
   const montoPlan = montoSuscripcionPorPlan(planLabel);
   const montoSuscripcion = esPrimerMesUsuario(creadoEn, periodo) ? 0 : montoPlan;
   const facturaEstado = montoSuscripcion === 0 ? "pagada" : "pendiente";

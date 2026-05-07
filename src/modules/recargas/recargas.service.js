@@ -161,8 +161,7 @@ async function aprobarRecarga(recargaId, body, adminId) {
     despues: updated,
   });
 
-  // Notificar al usuario que su recarga fue aprobada (UN solo mensaje: 'recarga_confirmada').
-  // Se construye más abajo en `crearNotificacionRecarga(... 'recarga_confirmada' ...)`.
+  // No se envía mensaje bot de recarga aprobada para mantener solo 3 tipos.
   const notificacion = null;
 
   // Auto-resolver notificación admin recarga_por_validar (si existe).
@@ -173,47 +172,8 @@ async function aprobarRecarga(recargaId, body, adminId) {
     .in("estado", ["pendiente", "sin_revisar"])
     .contains("payload", { recarga_id: recargaId });
 
-  // NUEVO: Enviar notificación de recarga confirmada con el nuevo saldo
-  if (crearNotificacionRecarga && prepararDatosNotificacion) {
-    try {
-      // Calcular el nuevo saldo del usuario
-      const { data: todasRecargas } = await supabase
-        .from('recargas')
-        .select('monto')
-        .eq('usuario_id', recarga.usuario_id)
-        .eq('estado', 'aprobada');
-      
-      const { data: todosPagos } = await supabase
-        .from('pagos')
-        .select('monto_aplicado')
-        .eq('usuario_id', recarga.usuario_id)
-        .eq('estado', 'pagado');
-      
-      const totalRecargas = (todasRecargas || []).reduce((sum, r) => sum + Number(r.monto || 0), 0);
-      const totalPagos = (todosPagos || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
-      const saldoActual = totalRecargas - totalPagos;
-      
-      // Preparar datos para notificación de recarga confirmada
-      const datosConfirmada = {
-        nombre_usuario: '', // se填充 en crearNotificacionRecarga
-        monto: recarga.monto,
-        saldo: saldoActual,
-        periodo: recarga.periodo
-      };
-      
-      // Crear notificación de recarga confirmada
-      await crearNotificacionRecarga(
-        recarga.usuario_id,
-        'recarga_confirmada',
-        datosConfirmada
-      );
-      
-      console.log(`[RECARGAS] Notificación de recarga confirmada enviada para usuario ${recarga.usuario_id}, saldo: ${saldoActual}`);
-    } catch (err) {
-      console.error("[RECARGAS] Error enviando notificación de recarga confirmada:", err.message);
-      // No fallamos la operación si falla la notificación
-    }
-  }
+  // No crear notificación bot de recarga_confirmada.
+  // El flujo bot queda limitado a 3 tipos de mensaje.
 
   // ============================================================
   // NUEVO: AUTO-LIMPIEZA - Cancelar notificaciones de cobro pendientes
@@ -424,4 +384,56 @@ async function rechazarRecarga(recargaId, body, adminId) {
   });
 }
 
-module.exports = { reportarRecarga, aprobarRecarga, rechazarRecarga, obtenerRecargasPendientesPorTelefono };
+/**
+ * Editar campos de una recarga (admin).
+ * Permite corregir monto/periodo/referencia/comprobante antes de aprobación.
+ */
+async function actualizarRecarga(recargaId, body, adminId) {
+  const { data: recarga, error: findErr } = await supabase
+    .from("recargas")
+    .select("*")
+    .eq("id", recargaId)
+    .single();
+
+  if (findErr || !recarga) return errors.notFound("Recarga no encontrada");
+
+  const updates = {};
+  if (body.monto !== undefined) updates.monto = body.monto;
+  if (body.comprobante_url !== undefined) updates.comprobante_url = body.comprobante_url || null;
+  if (body.referencia_tx !== undefined) updates.referencia_tx = body.referencia_tx || null;
+  if (body.observaciones_admin !== undefined) updates.observaciones_admin = body.observaciones_admin || null;
+
+  if (body.periodo !== undefined) {
+    const periodoNorm = normalizarPeriodo(body.periodo);
+    if (!periodoNorm) return errors.validation("Periodo inválido");
+    updates.periodo = periodoNorm;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return errors.validation("No se enviaron campos para actualizar");
+  }
+
+  const antes = { ...recarga };
+  const { data: updated, error: updateErr } = await supabase
+    .from("recargas")
+    .update(updates)
+    .eq("id", recargaId)
+    .select()
+    .single();
+
+  if (updateErr) throw new Error(`Error actualizando recarga: ${updateErr.message}`);
+
+  await registrarAuditLog({
+    actor_tipo: "admin",
+    actor_id: adminId,
+    accion: "actualizar_recarga",
+    entidad: "recargas",
+    entidad_id: recargaId,
+    antes,
+    despues: updated,
+  });
+
+  return success(updated);
+}
+
+module.exports = { reportarRecarga, aprobarRecarga, rechazarRecarga, actualizarRecarga, obtenerRecargasPendientesPorTelefono };

@@ -192,7 +192,54 @@ async function obtenerPendientesUsuario(telefono) {
     }
   }
 
-  return success(pendientes || []);
+  const lista = pendientes || [];
+
+  const esSolicitudRecarga = (t) => t === "solicitud_recarga" || t === "solicitud_recarga_inicio_mes" || t === "recordatorio_recarga";
+  const esPago = (t) => t === "obligacion_cumplida" || t === "pago_confirmado";
+
+  const solicitudes = lista
+    .filter((n) => esSolicitudRecarga(n.tipo))
+    .map((n) => ({ ...n, tipo: "solicitud_recarga" }));
+
+  const pagos = lista
+    .filter((n) => esPago(n.tipo))
+    .sort((a, b) => new Date(a.creado_en).getTime() - new Date(b.creado_en).getTime());
+
+  const grupos = [];
+  for (const p of pagos) {
+    if (grupos.length === 0) {
+      grupos.push([p]);
+      continue;
+    }
+    const g = grupos[grupos.length - 1];
+    const diff = Math.abs(new Date(p.creado_en).getTime() - new Date(g[0].creado_en).getTime());
+    if (diff <= 30 * 60 * 1000) {
+      g.push(p);
+    } else {
+      grupos.push([p]);
+    }
+  }
+
+  const pagosCanonicos = grupos.map((g) => {
+    if (g.length <= 1) {
+      return { ...g[0], tipo: "obligacion_cumplida" };
+    }
+    const obligaciones = g.map((x) => ({
+      etiqueta: x?.payload?.etiqueta || x?.payload?.servicio || "obligación",
+      valor: Number(x?.payload?.monto || x?.payload?.monto_total || x?.payload?.monto_aplicado || 0),
+    }));
+    return {
+      ...g[0],
+      id: `grp-${g[0].id}`,
+      tipo: "obligaciones_pagadas_grupal",
+      payload: {
+        ...(g[0].payload || {}),
+        obligaciones,
+      },
+    };
+  });
+
+  return success([...solicitudes, ...pagosCanonicos]);
 }
 
 /**
@@ -209,7 +256,7 @@ async function obtenerPendientesHoyGlobal() {
     .from("notificaciones")
     .select("*, usuarios(nombre, apellido, telefono)")
     .in("estado", ["pendiente", "entregada"])
-    .eq("tipo", "solicitud_recarga_inicio_mes")
+    .in("tipo", ["solicitud_recarga"])
     .gte("creado_en", inicioDia)
     .lte("creado_en", finDia)
     .order("creado_en", { ascending: true });
@@ -483,6 +530,8 @@ async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
  * Crea una notificación de recarga estructurada
  */
 async function crearNotificacionRecarga(usuarioId, tipo, datos) {
+  const tipoNormalizado = 'solicitud_recarga';
+
   // Obtener datos del usuario
   const { data: usuario } = await supabase
     .from('usuarios')
@@ -494,7 +543,7 @@ async function crearNotificacionRecarga(usuarioId, tipo, datos) {
   
   // Preparar payload estructurado
   const payload = {
-    tipo_mensaje: tipo === 'solicitud_recarga_inicio_mes' ? 'inicio_mes' : (tipo === 'recarga_confirmada' ? 'confirmada' : 'generico'),
+    tipo_mensaje: 'solicitud_recarga',
     nombre_usuario: nombreUsuario,
     mes_actual: datos.mes_actual || getNombreMesActual(),
     mes_anterior: datos.mes_anterior || getNombreMesAnterior(),
@@ -508,38 +557,18 @@ async function crearNotificacionRecarga(usuarioId, tipo, datos) {
     mensaje: ''
   };
   
-  // Generar mensaje según tipo
-  if (tipo === 'solicitud_recarga_inicio_mes') {
-    payload.mensaje = generarMensajeInicioMes({
-      nombre_usuario: nombreUsuario,
-      mes_anterior: datos.mes_anterior || getNombreMesAnterior(),
-      mes_actual: datos.mes_actual || getNombreMesActual(),
-      obligaciones: datos.obligaciones || [],
-      total_obligaciones: datos.total_obligaciones || 0,
-      total_mes_anterior: datos.total_mes_anterior || 0,
-      saldo_actual: datos.saldo_actual || 0,
-      valor_a_recargar: datos.valor_a_recargar || 0
-    });
-  } else if (tipo === 'solicitud_recarga') {
-    payload.mensaje = generarMensajeGenerico({
-      nombre_usuario: nombreUsuario,
-      obligaciones: datos.obligaciones || [],
-      total_obligaciones: datos.total_obligaciones || 0,
-      saldo_actual: datos.saldo_actual || 0,
-      valor_a_recargar: datos.valor_a_recargar || 0
-    });
-  } else if (tipo === 'recarga_confirmada') {
-    payload.mensaje = generarMensajeConfirmada({
-      nombre: nombreUsuario,
-      monto: datos.monto,
-      saldo: datos.saldo
-    });
-  }
+  payload.mensaje = generarMensajeGenerico({
+    nombre_usuario: nombreUsuario,
+    obligaciones: datos.obligaciones || [],
+    total_obligaciones: datos.total_obligaciones || 0,
+    saldo_actual: datos.saldo_actual || 0,
+    valor_a_recargar: datos.valor_a_recargar || 0
+  });
   
   // Crear notificación
   const notificacion = await crearNotificacionInterna({
     usuario_id: usuarioId,
-    tipo: tipo,
+    tipo: tipoNormalizado,
     canal: 'whatsapp',
     payload: payload
   });
@@ -612,20 +641,22 @@ async function crearAlertaAdmin(datos) {
  * y necesita revisión interna del admin (validar/rechazar/aproximar).
  */
 async function crearNotificacionAdminFacturaPorValidar({ factura, usuario }) {
+  const usuarioObj = usuario?.usuario || usuario || null;
+  const usuarioId = usuario?.usuario_id || usuarioObj?.id || factura.usuario_id || null;
   // Número de referencia mostrado en el panel admin: número factura > etiqueta > id corto.
   const numeroRef = factura.numero_factura || factura.etiqueta || (factura.id || '').toString().slice(0, 8);
   const { data, error } = await supabase
     .from("notificaciones")
     .insert({
-      usuario_id: null,
+      usuario_id: usuarioId,
       tipo: "factura_por_validar",
       canal: "sistema",
       payload: {
         tipo_accion: "validar_factura",
         factura_id: factura.id,
-        usuario_id: usuario?.id || factura.usuario_id,
-        usuario_nombre: usuario?.nombre || null,
-        usuario_telefono: usuario?.telefono || null,
+        usuario_id: usuarioId,
+        usuario_nombre: usuarioObj?.nombre || null,
+        usuario_telefono: usuarioObj?.telefono || null,
         servicio: factura.servicio,
         etiqueta: factura.etiqueta,
         numero_ref: numeroRef,
@@ -653,19 +684,21 @@ async function crearNotificacionAdminFacturaPorValidar({ factura, usuario }) {
  * y queda en en_validacion para que el admin apruebe o rechace.
  */
 async function crearNotificacionAdminRecargaPorValidar({ recarga, usuario }) {
+  const usuarioObj = usuario?.usuario || usuario || null;
+  const usuarioId = usuario?.usuario_id || usuarioObj?.id || recarga.usuario_id || null;
   const numeroRef = recarga.referencia_pago || recarga.numero_ref || (recarga.id || '').toString().slice(0, 8);
   const { data, error } = await supabase
     .from("notificaciones")
     .insert({
-      usuario_id: null,
+      usuario_id: usuarioId,
       tipo: "recarga_por_validar",
       canal: "sistema",
       payload: {
         tipo_accion: "validar_recarga",
         recarga_id: recarga.id,
-        usuario_id: usuario?.usuario_id || usuario?.id || recarga.usuario_id,
-        usuario_nombre: usuario?.nombre || null,
-        usuario_telefono: usuario?.telefono || null,
+        usuario_id: usuarioId,
+        usuario_nombre: usuarioObj?.nombre || null,
+        usuario_telefono: usuarioObj?.telefono || null,
         numero_ref: numeroRef,
         monto: recarga.monto,
         periodo: recarga.periodo,

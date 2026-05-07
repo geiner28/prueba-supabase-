@@ -68,6 +68,7 @@ async function capturaFactura(body, actorTipo = "bot") {
 
   // 3. Normalizar periodo (usar el de la obligación si no se envía)
   const periodoNorm = normalizarPeriodo(periodo || obligacion.periodo);
+  const fechaRecordatorioAuto = fecha_recordatorio || calcularFechaRecordatorio(fecha_vencimiento);
 
   // 4. Determinar si requiere revisión manual del admin
   const requiereRevision = ["dudosa", "fallida"].includes(extraccion_estado) || monto == null;
@@ -93,7 +94,7 @@ async function capturaFactura(body, actorTipo = "bot") {
       periodo: periodoNorm,
       fecha_emision: fecha_emision || null,
       fecha_vencimiento: fecha_vencimiento || null,
-      fecha_recordatorio: fecha_recordatorio || null,
+      fecha_recordatorio: fechaRecordatorioAuto || null,
       monto: monto != null ? monto : null,
       referencia_pago: referencia_pago || null,
       tipo_referencia: tipo_referencia || null,
@@ -551,6 +552,12 @@ async function actualizarFactura(facturaId, body, actorTipo = "admin", actorId =
     updates.periodo = periodoNorm;
   }
 
+  // Si cambia fecha_vencimiento y no viene fecha_recordatorio explícita,
+  // recalcular automáticamente el recordatorio a -5 días.
+  if (updates.fecha_vencimiento !== undefined && updates.fecha_recordatorio === undefined) {
+    updates.fecha_recordatorio = calcularFechaRecordatorio(updates.fecha_vencimiento);
+  }
+
   if (Object.keys(updates).length === 0) {
     return errors.validation("No se enviaron campos para actualizar");
   }
@@ -615,9 +622,7 @@ async function evaluarYNotificarObligacion(obligacionId, periodo) {
 
     if (resultado && resultado.solicitudCargada) {
       const esPrimeraRecarga = await detectarPrimeraRecargaDelMes(resultado.usuarioId);
-      const tipoNotificacion = esPrimeraRecarga
-        ? 'solicitud_recarga_inicio_mes'
-        : 'solicitud_recarga';
+      const tipoNotificacion = 'solicitud_recarga';
 
       const yaEnviadaHoy = await existeNotificacionHoy(resultado.usuarioId, tipoNotificacion);
 

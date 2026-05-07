@@ -81,9 +81,7 @@ async function jobEvaluacionRecargas() {
           const esPrimeraRecarga = await detectarPrimeraRecargaDelMes(resultado.usuarioId);
           
           // 2.4: Determinar tipo de notificación
-          const tipoNotificacion = esPrimeraRecarga 
-            ? 'solicitud_recarga_inicio_mes' 
-            : 'solicitud_recarga';
+          const tipoNotificacion = 'solicitud_recarga';
           
           console.log(`[JOBS] Es primera recarga del mes: ${esPrimeraRecarga}, tipo: ${tipoNotificacion}`);
           

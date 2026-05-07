@@ -11,6 +11,18 @@ const { registrarAuditLog } = require("../../utils/auditLog");
 const { actualizarContadoresObligacion } = require("../facturas/facturas.service");
 const { crearNotificacionInterna, generarMensajePagoObligacion } = require("../notificaciones/notificaciones.service");
 
+function montoSuscripcionPorPlan(plan) {
+  const planNorm = String(plan || "control").toLowerCase();
+  if (planNorm === "tranquilidad") return 10000;
+  if (planNorm === "respaldo") return 15000;
+  return 0;
+}
+
+function planTieneSuscripcion(plan) {
+  const planNorm = String(plan || "control").toLowerCase();
+  return planNorm === "tranquilidad" || planNorm === "respaldo";
+}
+
 /**
  * Crear pago para una factura validada.
  */
@@ -207,20 +219,6 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
     }
   }
 
-  // Notificar: pago confirmado
-  const notificacion = await crearNotificacionInterna({
-    usuario_id: pago.usuario_id,
-    tipo: "pago_confirmado",
-    canal: "whatsapp",
-    payload: {
-      pago_id: pagoId,
-      monto: pago.monto_aplicado,
-      servicio: pago.facturas?.servicio,
-      comprobante_pago_url: comprobante_pago_url || null,
-      mensaje: `Se ha confirmado el pago de $${Number(pago.monto_aplicado).toLocaleString()} para ${pago.facturas?.servicio || "tu factura"}.`,
-    },
-  });
-
   await registrarAuditLog({
     actor_tipo: actorTipo, actor_id: actorId,
     accion: "confirmar_pago", entidad: "pagos", entidad_id: pagoId,
@@ -234,11 +232,7 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
     obligacion_estado: obligacionEstado,
     obligacion_completada: obligacionEstado === "completada",
     nuevas_obligaciones_ids: nuevasObligacionesIds,
-    notificacion: notificacion ? {
-      id: notificacion.id,
-      tipo: notificacion.tipo,
-      mensaje: notificacion.payload?.mensaje || "",
-    } : null,
+    notificacion: null,
   });
 }
 
@@ -283,10 +277,18 @@ async function fallarPago(pagoId, body, actorTipo = "admin", actorId = null) {
  * Crear automáticamente obligaciones/facturas del siguiente mes
  * cuando TODAS las obligaciones del periodo estén completas.
  */
-async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual) {
+async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones = {}) {
   try {
+    const { forzar = false } = opciones;
     const periodoNorm = normalizarPeriodo(periodoActual);
     if (!periodoNorm) return [];
+
+    const { data: usuarioBase } = await supabase
+      .from("usuarios")
+      .select("plan")
+      .eq("id", usuarioId)
+      .single();
+    const planUsuario = String(usuarioBase?.plan || "control").toLowerCase();
 
     const { data: obligacionesPeriodo, error: oblErr } = await supabase
       .from("obligaciones")
@@ -338,7 +340,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual) {
       return o.estado === "completada" || todasPagadas;
     });
 
-    if (!mesCompletado) {
+    if (!mesCompletado && !forzar) {
       return [];
     }
 
@@ -426,24 +428,51 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual) {
       ].join("|");
 
       const existentes = new Set((facturasDestino || []).map(firmaFactura));
-      const nuevasFacturas = facturasOrigen
-        .filter((f) => !existentes.has(firmaFactura(f)))
-        .map((f) => ({
-          usuario_id: usuarioId,
-          obligacion_id: siguienteObligacion.id,
-          servicio: f.servicio,
-          periodo: nuevoPeriodo,
-          monto: f.monto,
-          estado: "pendiente",
-          validacion_estado: "sin_validar",
-          origen: "auto",
-          extraccion_estado: "ok",
-          etiqueta: f.etiqueta || null,
-          archivo_url: f.archivo_url || null,
-          tipo_referencia: f.tipo_referencia || null,
-          referencia_pago: f.referencia_pago || null,
-          grupo: f.grupo || null,
-        }));
+      const firmasNuevas = new Set();
+      const nuevasFacturas = [];
+      for (const f of facturasOrigen) {
+          const esSuscripcion = String(f.tipo_referencia || "").toLowerCase() === "suscripcion";
+
+          if (esSuscripcion && !planTieneSuscripcion(planUsuario)) {
+            // Plan control no debe generar suscripciones en meses siguientes.
+            continue;
+          }
+
+          const monto = esSuscripcion
+            ? montoSuscripcionPorPlan(planUsuario)
+            : Number(f.monto || 0);
+
+          const estado = esSuscripcion
+            ? (monto === 0 ? "pagada" : "pendiente")
+            : "pendiente";
+
+          const validacionEstado = esSuscripcion ? "validada" : "sin_validar";
+
+          const candidato = {
+            usuario_id: usuarioId,
+            obligacion_id: siguienteObligacion.id,
+            servicio: f.servicio,
+            periodo: nuevoPeriodo,
+            monto,
+            estado,
+            validacion_estado: validacionEstado,
+            origen: "auto",
+            extraccion_estado: "ok",
+            etiqueta: f.etiqueta || null,
+            archivo_url: f.archivo_url || null,
+            tipo_referencia: f.tipo_referencia || null,
+            referencia_pago: f.referencia_pago || null,
+            grupo: esSuscripcion ? 1 : (f.grupo || null),
+          };
+
+          const firmaCandidato = firmaFactura(candidato);
+          if (existentes.has(firmaCandidato) || firmasNuevas.has(firmaCandidato)) {
+            continue;
+          }
+
+          firmasNuevas.add(firmaCandidato);
+          nuevasFacturas.push(candidato);
+      }
 
       if (nuevasFacturas.length > 0) {
         const { error: insertErr } = await supabase

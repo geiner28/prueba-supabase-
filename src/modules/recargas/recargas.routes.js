@@ -4,7 +4,7 @@
 const { Router } = require("express");
 const { authBot, authAdmin } = require("../../middleware/auth");
 const { validateBody } = require("../../middleware/validate");
-const { reportarRecargaSchema, aprobarRecargaSchema, rechazarRecargaSchema } = require("./recargas.schema");
+const { reportarRecargaSchema, aprobarRecargaSchema, rechazarRecargaSchema, actualizarRecargaSchema } = require("./recargas.schema");
 const service = require("./recargas.service");
 
 const router = Router();
@@ -47,6 +47,16 @@ router.put("/:id/aprobar", authAdmin, validateBody(aprobarRecargaSchema), async 
 router.put("/:id/rechazar", authAdmin, validateBody(rechazarRecargaSchema), async (req, res, next) => {
   try {
     const result = await service.rechazarRecarga(req.params.id, req.validatedBody, req.adminId);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/recargas/:id — Editar campos de recarga (admin)
+router.put("/:id", authAdmin, validateBody(actualizarRecargaSchema), async (req, res, next) => {
+  try {
+    const result = await service.actualizarRecarga(req.params.id, req.validatedBody, req.adminId);
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);

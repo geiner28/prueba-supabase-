@@ -282,10 +282,10 @@ async function verificarRecordatorios(body) {
     const faltante = sol.monto_solicitado - sol.monto_recargado;
 
     if (disponible < faltante) {
-      // No tiene saldo suficiente → generar recordatorio
+      // No tiene saldo suficiente → generar solicitud de recarga (tipo canónico)
       await crearNotificacionInterna({
         usuario_id: usuario.usuario_id,
-        tipo: "recordatorio_recarga",
+        tipo: "solicitud_recarga",
         canal: "whatsapp",
         payload: {
           solicitud_id: sol.id,

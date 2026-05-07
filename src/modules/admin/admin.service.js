@@ -718,6 +718,27 @@ async function dashboardPeriodosDisponibles() {
  * - Si no existe: crea usuario + ajustes automáticos
  */
 async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, correo, direccion, plan, tipo_identificacion, numero_identificacion, ciudad }) {
+  const isMissingExtendedColumnError = (err) => {
+    if (!err) return false;
+    const msg = String(err.message || "").toLowerCase();
+    const code = String(err.code || "").toUpperCase();
+    return code === "42703" || code === "PGRST204" ||
+      (msg.includes("tipo_identificacion") && msg.includes("column")) ||
+      (msg.includes("numero_identificacion") && msg.includes("column")) ||
+      (msg.includes("ciudad") && msg.includes("column"));
+  };
+
+  const mapUsuarioDbError = (err) => {
+    if (!err) return null;
+    if (err.code === "23505") {
+      return errors.conflict("Ya existe un usuario con ese número de teléfono");
+    }
+    if (err.code === "23514" && String(err.message || "").includes("chk_usuarios_tipo_identificacion")) {
+      return errors.badRequest("tipo_identificacion inválido. Valores permitidos: CC, NIT, CE");
+    }
+    return null;
+  };
+
   let existing = null;
 
   if (usuario_id) {
@@ -775,11 +796,27 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
     if (ciudad !== undefined) updates.ciudad = ciudad;
 
     if (Object.keys(updates).length > 0) {
-      const { error: updateErr } = await supabase
+      let { error: updateErr } = await supabase
         .from("usuarios")
         .update(updates)
         .eq("id", existing.id);
 
+      // Compatibilidad hacia atrás: instancias sin migración 006 (sin columnas nuevas).
+      if (updateErr && isMissingExtendedColumnError(updateErr)) {
+        const { tipo_identificacion: _ti, numero_identificacion: _ni, ciudad: _ci, ...baseUpdates } = updates;
+        if (Object.keys(baseUpdates).length > 0) {
+          const retry = await supabase
+            .from("usuarios")
+            .update(baseUpdates)
+            .eq("id", existing.id);
+          updateErr = retry.error;
+        } else {
+          updateErr = null;
+        }
+      }
+
+      const mappedUpdateErr = mapUsuarioDbError(updateErr);
+      if (mappedUpdateErr) return mappedUpdateErr;
       if (updateErr) throw new Error(`Error actualizando usuario: ${updateErr.message}`);
     }
 
@@ -793,9 +830,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
   }
 
   // 3. Crear usuario nuevo
-  const { data: newUser, error: createErr } = await supabase
-    .from("usuarios")
-    .insert({
+  const insertPayload = {
       telefono,
       nombre: nombre || telefono,
       apellido: apellido || "",
@@ -805,15 +840,29 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
       tipo_identificacion: tipo_identificacion || null,
       numero_identificacion: numero_identificacion || null,
       ciudad: ciudad || null,
-    })
+    };
+
+  let { data: newUser, error: createErr } = await supabase
+    .from("usuarios")
+    .insert(insertPayload)
     .select()
     .single();
 
+  // Compatibilidad hacia atrás: instancias sin migración 006 (sin columnas nuevas).
+  if (createErr && isMissingExtendedColumnError(createErr)) {
+    const { tipo_identificacion: _ti, numero_identificacion: _ni, ciudad: _ci, ...basePayload } = insertPayload;
+    const retry = await supabase
+      .from("usuarios")
+      .insert(basePayload)
+      .select()
+      .single();
+    newUser = retry.data;
+    createErr = retry.error;
+  }
+
   if (createErr) {
-    // Unique constraint violation (teléfono ya registrado por carrera)
-    if (createErr.code === "23505") {
-      return errors.conflict("Ya existe un usuario con ese número de teléfono");
-    }
+    const mappedCreateErr = mapUsuarioDbError(createErr);
+    if (mappedCreateErr) return mappedCreateErr;
     throw new Error(`Error creando usuario: ${createErr.message}`);
   }
 
@@ -2078,6 +2127,26 @@ async function listarTransacciones({ page = 1, limit = 8, tipo, usuario_id, sear
   }
 }
 
+/**
+ * Crear manualmente las obligaciones/facturas del siguiente mes para un usuario,
+ * copiando las del periodo indicado y aplicando las reglas de suscripción.
+ */
+async function crearSiguienteMesManual(telefono, periodoOrigen) {
+  try {
+    const usuario = await resolverUsuarioPorTelefono(telefono);
+    if (!usuario) return errors.notFound("Usuario no encontrado");
+
+    const periodoNorm = normalizarPeriodo(periodoOrigen);
+    if (!periodoNorm) return errors.badRequest("Periodo inválido. Usar formato YYYY-MM-DD");
+
+    const nuevasIds = await crearSiguienteMesSiCorresponde(usuario.usuario_id, periodoNorm, { forzar: true });
+    return { statusCode: 200, body: { ok: true, nuevas_obligaciones: nuevasIds.length, ids: nuevasIds } };
+  } catch (err) {
+    console.error("Error en crearSiguienteMesManual:", err.message);
+    return errors.internal(err.message);
+  }
+}
+
 module.exports = {
   listarClientes,
   perfilCompletoCliente,
@@ -2106,4 +2175,5 @@ module.exports = {
   historialUnificado,
   // Transacciones unificadas
   listarTransacciones,
+  crearSiguienteMesManual,
 };

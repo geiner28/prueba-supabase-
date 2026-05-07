@@ -6,7 +6,7 @@
 -- (rediseño modales "Agregar usuario" y "Agregar obligación").
 --
 --   USUARIOS:
---     - tipo_identificacion   (CC | NIT)
+--     - tipo_identificacion   (CC | NIT | CE)
 --     - numero_identificacion (varchar 32)
 --     - ciudad                (varchar 80)
 --
@@ -35,7 +35,7 @@ ALTER TABLE usuarios
 
 ALTER TABLE usuarios
   ADD CONSTRAINT chk_usuarios_tipo_identificacion
-  CHECK (tipo_identificacion IS NULL OR tipo_identificacion IN ('CC', 'NIT'));
+  CHECK (tipo_identificacion IS NULL OR tipo_identificacion IN ('CC', 'NIT', 'CE'));
 
 CREATE INDEX IF NOT EXISTS idx_usuarios_numero_identificacion
   ON usuarios(numero_identificacion)

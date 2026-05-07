@@ -19,4 +19,12 @@ const rechazarRecargaSchema = z.object({
   motivo_rechazo: z.string().min(1, "Motivo de rechazo requerido"),
 });
 
-module.exports = { reportarRecargaSchema, aprobarRecargaSchema, rechazarRecargaSchema };
+const actualizarRecargaSchema = z.object({
+  monto: z.number().positive("Monto debe ser positivo").optional(),
+  periodo: z.string().min(7, "Periodo inválido").optional(),
+  comprobante_url: z.string().nullable().optional(),
+  referencia_tx: z.string().nullable().optional(),
+  observaciones_admin: z.string().nullable().optional(),
+});
+
+module.exports = { reportarRecargaSchema, aprobarRecargaSchema, rechazarRecargaSchema, actualizarRecargaSchema };
