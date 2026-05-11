@@ -6,14 +6,14 @@ const { success, errors } = require("../../utils/response");
 const { registrarAuditLog } = require("../../utils/auditLog");
 
 function montoSuscripcionPorPlan(plan) {
-  const planNorm = String(plan || "control").toLowerCase();
+  const planNorm = String(plan || "tranquilidad").toLowerCase();
   if (planNorm === "tranquilidad") return 10000;
-  if (planNorm === "respaldo") return 15000;
+  if (planNorm === "respaldo") return 20000;
   return 0;
 }
 
 function planTieneSuscripcion(plan) {
-  const planNorm = String(plan || "control").toLowerCase();
+  const planNorm = String(plan || "tranquilidad").toLowerCase();
   return planNorm === "tranquilidad" || planNorm === "respaldo";
 }
 
@@ -110,6 +110,7 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
       numero_identificacion: numero_identificacion || null,
       ciudad: ciudad || null,
       direccion: direccion || null,
+      plan: "tranquilidad",
     })
     .select()
     .single();
@@ -131,7 +132,7 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
   }
 
   // 4. Crear programación de recargas por defecto según el plan
-  const plan = newUser.plan || "control";
+  const plan = newUser.plan || "tranquilidad";
   const esPlanDoble = plan === "tranquilidad" || plan === "respaldo";
   const programacionData = {
     usuario_id: newUser.id,
@@ -165,17 +166,17 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
  * - Una obligación con tipo_referencia='suscripcion' (receptor='DeOne', grupo=1, monto=0)
  * - Una factura asociada (también monto 0, sin_validar / pendiente)
  *
- * Se invoca SOLO al crear el usuario (no en updates).
+ * Se invoca al crear el usuario Y cuando cambia de plan (para próximo mes).
+ * El parámetro periodoForzado se usa cuando cambia de plan (para generar suscripción del próximo mes).
  */
 async function crearSuscripcionInicial(usuarioId, plan, creadoEn = null, periodoForzado = null) {
   if (!planTieneSuscripcion(plan)) {
-    // Plan control no genera obligación de suscripción.
     return null;
   }
 
   const hoy = new Date();
   const periodo = periodoForzado || `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`;
-  const planLabel = String(plan || "control").toLowerCase();
+  const planLabel = String(plan || "tranquilidad").toLowerCase();
   const montoPlan = montoSuscripcionPorPlan(planLabel);
   const montoSuscripcion = esPrimerMesUsuario(creadoEn, periodo) ? 0 : montoPlan;
   const facturaEstado = montoSuscripcion === 0 ? "pagada" : "pendiente";
@@ -191,8 +192,35 @@ async function crearSuscripcionInicial(usuarioId, plan, creadoEn = null, periodo
     .eq("periodo", periodo)
     .limit(1);
 
+  // Si existe obligación de suscripción para este período, actualizar su plan y monto
+  // (usado cuando cambias de plan a mitad de mes)
   if (oblExistente && oblExistente.length > 0) {
-    return oblExistente[0].id;
+    const oblId = oblExistente[0].id;
+    
+    // Actualizar descripción y número de referencia del plan
+    await supabase
+      .from("obligaciones")
+      .update({
+        descripcion: `Suscripción DeOne — ${planLabel}`,
+        numero_referencia: planLabel,
+        monto_total: montoSuscripcion,
+        estado: obligacionEstado,
+      })
+      .eq("id", oblId);
+
+    // Actualizar factura asociada
+    await supabase
+      .from("facturas")
+      .update({
+        monto: montoSuscripcion,
+        estado: facturaEstado,
+        etiqueta: planLabel,
+        referencia_pago: planLabel,
+      })
+      .eq("obligacion_id", oblId)
+      .eq("tipo_referencia", "suscripcion");
+
+    return oblId;
   }
 
   const { data: nuevaObl, error: oblErr } = await supabase
@@ -259,6 +287,18 @@ async function updateUserPlan({ telefono, plan }) {
     return errors.notFound(`Usuario con teléfono ${telefono} no encontrado`);
   }
 
+  // Si el plan no cambió, no hacer nada
+  if (existing.plan === plan) {
+    return success({
+      usuario_id: existing.id,
+      telefono: existing.telefono,
+      plan_anterior: existing.plan,
+      plan_nuevo: plan,
+      actualizado_en: new Date().toISOString(),
+      mensaje: "El usuario ya tiene este plan"
+    });
+  }
+
   // 2. Actualizar plan
   const { data: updated, error: updateErr } = await supabase
     .from("usuarios")
@@ -269,12 +309,30 @@ async function updateUserPlan({ telefono, plan }) {
 
   if (updateErr) throw new Error(`Error actualizando plan: ${updateErr.message}`);
 
+  // 3. Generar obligación de suscripción para el próximo mes
+  // Cuando cambia de plan, se cobra inmediatamente el nuevo plan (no gratis)
+  try {
+    const hoy = new Date();
+    const proximoMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1);
+    const periodoProximo = `${proximoMes.getFullYear()}-${String(proximoMes.getMonth() + 1).padStart(2, "0")}-01`;
+    
+    // Crear obligación de suscripción para el próximo mes con el nuevo plan
+    // NO es gratis porque es cambio de plan, no nuevo usuario
+    await crearSuscripcionInicial(updated.id, plan, updated.creado_en, periodoProximo);
+    
+    console.log(`[USERS] Obligación de suscripción generada para ${telefono} con nuevo plan ${plan}`);
+  } catch (err) {
+    console.error("[USERS] Error generando suscripción al cambiar plan:", err.message);
+    // No fallar si hay error en suscripción, solo loguear
+  }
+
   return success({
     usuario_id: updated.id,
     telefono: updated.telefono,
     plan_anterior: existing.plan,
     plan_nuevo: updated.plan,
-    actualizado_en: updated.updated_at
+    actualizado_en: updated.updated_at,
+    suscripcion_proxima_generada: true
   });
 }
 
@@ -296,13 +354,10 @@ async function getUserByTelefono(telefono) {
 }
 
 /**
- * Eliminar usuario.
- * - soft (default): marca activo=false (preserva historial).
- * - hard: borra fila usuarios; CASCADE elimina ajustes, obligaciones, facturas,
- *   recargas, pagos, revisiones y solicitudes_recarga; notificaciones quedan con
- *   usuario_id=NULL. Bloqueado si hay obligaciones activas/en_progreso salvo force=true.
+ * Eliminar usuario de forma definitiva (hard delete).
+ * Siempre elimina el usuario y todos sus datos relacionados.
  */
-async function deleteUser({ id, telefono, hard = false, force = false, actor }) {
+async function deleteUser({ id, telefono, actor }) {
   // Resolver usuario por id o telefono
   let query = supabase.from("usuarios").select("*");
   if (id) query = query.eq("id", id);
@@ -312,88 +367,93 @@ async function deleteUser({ id, telefono, hard = false, force = false, actor }) 
   const { data: usuario, error: findErr } = await query.single();
   if (findErr || !usuario) return errors.notFound("Usuario no encontrado");
 
-  // Validar obligaciones activas/en_progreso
-  const { data: oblsActivas, error: oblsErr } = await supabase
-    .from("obligaciones")
-    .select("id, estado")
-    .eq("usuario_id", usuario.id)
-    .in("estado", ["activa", "en_progreso"]);
+  // Obtener IDs relacionados para limpieza explícita
+  const [{ data: obligaciones, error: oblsErr }, { data: facturas, error: facErr }, { data: recargas, error: recErr }] = await Promise.all([
+    supabase.from("obligaciones").select("id").eq("usuario_id", usuario.id),
+    supabase.from("facturas").select("id").eq("usuario_id", usuario.id),
+    supabase.from("recargas").select("id").eq("usuario_id", usuario.id),
+  ]);
 
-  if (oblsErr) throw new Error(`Error verificando obligaciones: ${oblsErr.message}`);
+  if (oblsErr) throw new Error(`Error consultando obligaciones del usuario: ${oblsErr.message}`);
+  if (facErr) throw new Error(`Error consultando facturas del usuario: ${facErr.message}`);
+  if (recErr) throw new Error(`Error consultando recargas del usuario: ${recErr.message}`);
 
-  if (oblsActivas && oblsActivas.length > 0 && !force) {
-    return errors.invalidTransition(
-      `El usuario tiene ${oblsActivas.length} obligación(es) activa(s)/en progreso. Use ?force=true para eliminar de todos modos.`
-    );
+  const obligacionIds = (obligaciones || []).map((o) => o.id);
+  const facturaIds = (facturas || []).map((f) => f.id);
+  const recargaIds = (recargas || []).map((r) => r.id);
+
+  // 1) Eliminar notificaciones del usuario
+  const { error: notiErr } = await supabase.from("notificaciones").delete().eq("usuario_id", usuario.id);
+  if (notiErr) throw new Error(`Error eliminando notificaciones del usuario: ${notiErr.message}`);
+
+  // Limpiar historial administrativo directo del usuario (si existe)
+  const { error: auditErr } = await supabase
+    .from("audit_log")
+    .delete()
+    .eq("entidad", "usuarios")
+    .eq("entidad_id", usuario.id);
+  if (auditErr) throw new Error(`Error eliminando audit log del usuario: ${auditErr.message}`);
+
+  // 2) Eliminar revisiones relacionadas a facturas/recargas y por usuario
+  if (facturaIds.length > 0) {
+    const { error: revFactErr } = await supabase.from("revisiones_admin").delete().in("factura_id", facturaIds);
+    if (revFactErr) throw new Error(`Error eliminando revisiones de facturas: ${revFactErr.message}`);
   }
-
-  if (hard) {
-    // Verificar pagos confirmados (datos financieros) antes de borrar definitivamente
-    const { count: pagosCount, error: pagosErr } = await supabase
-      .from("pagos")
-      .select("id", { count: "exact", head: true })
-      .eq("usuario_id", usuario.id)
-      .in("estado", ["pagado", "en_proceso"]);
-    if (pagosErr) throw new Error(`Error verificando pagos: ${pagosErr.message}`);
-    if ((pagosCount || 0) > 0 && !force) {
-      return errors.invalidTransition(
-        `El usuario tiene ${pagosCount} pago(s) confirmado(s). Hard delete bloqueado por integridad financiera. Use ?force=true para forzar.`
-      );
-    }
-
-    const { error: delErr } = await supabase.from("usuarios").delete().eq("id", usuario.id);
-    if (delErr) throw new Error(`Error eliminando usuario: ${delErr.message}`);
-
-    await registrarAuditLog({
-      actor_tipo: actor || "admin",
-      accion: "hard_delete_usuario",
-      entidad: "usuarios",
-      entidad_id: usuario.id,
-      antes: usuario,
-    });
-
-    return success({
-      usuario_id: usuario.id,
-      telefono: usuario.telefono,
-      modo: "hard",
-      eliminado: true,
-    });
+  if (recargaIds.length > 0) {
+    const { error: revRecErr } = await supabase.from("revisiones_admin").delete().in("recarga_id", recargaIds);
+    if (revRecErr) throw new Error(`Error eliminando revisiones de recargas: ${revRecErr.message}`);
   }
+  const { error: revUserErr } = await supabase.from("revisiones_admin").delete().eq("usuario_id", usuario.id);
+  if (revUserErr) throw new Error(`Error eliminando revisiones del usuario: ${revUserErr.message}`);
 
-  // Soft delete
-  if (usuario.activo === false) {
-    return success({
-      usuario_id: usuario.id,
-      telefono: usuario.telefono,
-      modo: "soft",
-      eliminado: true,
-      mensaje: "El usuario ya estaba inactivo",
-    });
+  // 3) Eliminar solicitudes de recarga relacionadas
+  if (obligacionIds.length > 0) {
+    const { error: solOblErr } = await supabase.from("solicitudes_recarga").delete().in("obligacion_id", obligacionIds);
+    if (solOblErr) throw new Error(`Error eliminando solicitudes por obligación: ${solOblErr.message}`);
   }
+  const { error: solUserErr } = await supabase.from("solicitudes_recarga").delete().eq("usuario_id", usuario.id);
+  if (solUserErr) throw new Error(`Error eliminando solicitudes del usuario: ${solUserErr.message}`);
 
-  const { data: updated, error: updErr } = await supabase
-    .from("usuarios")
-    .update({ activo: false })
-    .eq("id", usuario.id)
-    .select()
-    .single();
-  if (updErr) throw new Error(`Error desactivando usuario: ${updErr.message}`);
+  // 4) Eliminar PAGOS PRIMERO (antes de facturas, porque factura_id tiene ON DELETE RESTRICT)
+  const { error: pagosErr } = await supabase.from("pagos").delete().eq("usuario_id", usuario.id);
+  if (pagosErr) throw new Error(`Error eliminando pagos del usuario: ${pagosErr.message}`);
+
+  // 5) Eliminar facturas y recargas (después de pagos, por la FK)
+  const { error: delFactErr } = await supabase.from("facturas").delete().eq("usuario_id", usuario.id);
+  if (delFactErr) throw new Error(`Error eliminando facturas del usuario: ${delFactErr.message}`);
+
+  const { error: delRecErr } = await supabase.from("recargas").delete().eq("usuario_id", usuario.id);
+  if (delRecErr) throw new Error(`Error eliminando recargas del usuario: ${delRecErr.message}`);
+
+  // 6) Eliminar obligaciones
+  const { error: delOblErr } = await supabase.from("obligaciones").delete().eq("usuario_id", usuario.id);
+  if (delOblErr) throw new Error(`Error eliminando obligaciones del usuario: ${delOblErr.message}`);
+
+  // 7) Eliminar configuración/ajustes
+  const { error: delProgErr } = await supabase.from("programacion_recargas").delete().eq("usuario_id", usuario.id);
+  if (delProgErr) throw new Error(`Error eliminando programación de recargas: ${delProgErr.message}`);
+
+  const { error: delAjustesErr } = await supabase.from("ajustes_usuario").delete().eq("usuario_id", usuario.id);
+  if (delAjustesErr) throw new Error(`Error eliminando ajustes del usuario: ${delAjustesErr.message}`);
+
+  // 8) Eliminar usuario (PostgreSQL ejecutará cascada ON DELETE CASCADE para pagos con usuario_id)
+  const { error: delUserErr } = await supabase.from("usuarios").delete().eq("id", usuario.id);
+  if (delUserErr) throw new Error(`Error eliminando usuario: ${delUserErr.message}`);
 
   await registrarAuditLog({
     actor_tipo: actor || "admin",
-    accion: "soft_delete_usuario",
+    accion: "hard_delete_usuario",
     entidad: "usuarios",
     entidad_id: usuario.id,
     antes: usuario,
-    despues: updated,
   });
 
   return success({
     usuario_id: usuario.id,
     telefono: usuario.telefono,
-    modo: "soft",
+    modo: "hard",
     eliminado: true,
-    activo: false,
+    cascada: true,
   });
 }
 

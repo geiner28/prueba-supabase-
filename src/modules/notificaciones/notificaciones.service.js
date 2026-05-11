@@ -10,6 +10,90 @@ const supabase = require("../../config/supabase");
 const { success, errors } = require("../../utils/response");
 const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 
+function esTipoSolicitudRecarga(tipo) {
+  return tipo === "solicitud_recarga" || tipo === "solicitud_recarga_inicio_mes" || tipo === "recordatorio_recarga";
+}
+
+function tienePlaceholdersMensaje(mensaje) {
+  const m = String(mensaje || "");
+  return m.includes("(saldo_usuario)") || m.includes("(valor_recarga)");
+}
+
+async function calcularSaldoUsuarioReal(usuarioId) {
+  if (!usuarioId) return 0;
+
+  const { data: recargas } = await supabase
+    .from("recargas")
+    .select("monto")
+    .eq("usuario_id", usuarioId)
+    .eq("estado", "aprobada");
+
+  const { data: pagos } = await supabase
+    .from("pagos")
+    .select("monto_aplicado")
+    .eq("usuario_id", usuarioId)
+    .eq("estado", "pagado");
+
+  const totalRecargas = (recargas || []).reduce((sum, r) => sum + Number(r.monto || 0), 0);
+  const totalPagos = (pagos || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
+  return totalRecargas - totalPagos;
+}
+
+async function normalizarPayloadSolicitudRecarga({ usuarioId, payload, forceMensaje = false, nombreFallback = null, saldoCache = null }) {
+  const p = payload || {};
+
+  let saldoActual;
+  if (p.saldo_actual !== undefined && p.saldo_actual !== null) {
+    saldoActual = Number(p.saldo_actual);
+  } else if (p.saldo_usuario !== undefined && p.saldo_usuario !== null) {
+    saldoActual = Number(p.saldo_usuario);
+  } else if (saldoCache && saldoCache.has(usuarioId)) {
+    saldoActual = Number(saldoCache.get(usuarioId));
+  } else {
+    saldoActual = await calcularSaldoUsuarioReal(usuarioId);
+    if (saldoCache) saldoCache.set(usuarioId, saldoActual);
+  }
+
+  const valorRecarga = Number(
+    p.valor_a_recargar
+      ?? p.valor_recarga
+      ?? p.monto_faltante
+      ?? p.monto
+      ?? 0
+  );
+
+  let nombreUsuario = p.nombre_usuario || nombreFallback;
+  if (!nombreUsuario && usuarioId) {
+    const { data: usuarioNombre } = await supabase
+      .from("usuarios")
+      .select("nombre, telefono")
+      .eq("id", usuarioId)
+      .single();
+    nombreUsuario = usuarioNombre?.nombre || usuarioNombre?.telefono || "Usuario";
+  }
+  if (!nombreUsuario) nombreUsuario = "Usuario";
+
+  const payloadNormalizado = {
+    ...p,
+    saldo_actual: saldoActual,
+    saldo_usuario: saldoActual,
+    valor_a_recargar: valorRecarga,
+    valor_recarga: valorRecarga,
+    nombre_usuario: nombreUsuario,
+  };
+
+  const mensajeActual = String(payloadNormalizado.mensaje || "");
+  if (forceMensaje || !mensajeActual || tienePlaceholdersMensaje(mensajeActual)) {
+    payloadNormalizado.mensaje = generarMensajeSolicitudRecarga({
+      nombre_usuario: nombreUsuario,
+      saldo_actual: saldoActual,
+      valor_a_recargar: valorRecarga,
+    });
+  }
+
+  return payloadNormalizado;
+}
+
 /**
  * Crear una notificación para un usuario.
  */
@@ -17,13 +101,23 @@ async function crearNotificacion({ telefono, tipo, canal, destinatario, payload 
   const usuario = await resolverUsuarioPorTelefono(telefono);
   if (!usuario) return errors.notFound("Usuario no encontrado con ese teléfono");
 
+  const tipoPersistir = esTipoSolicitudRecarga(tipo) ? "solicitud_recarga" : tipo;
+  const payloadPersistir = esTipoSolicitudRecarga(tipo)
+    ? await normalizarPayloadSolicitudRecarga({
+      usuarioId: usuario.usuario_id,
+      payload,
+      forceMensaje: true,
+      nombreFallback: usuario?.usuario?.nombre || usuario?.usuario?.telefono || null,
+    })
+    : (payload || {});
+
   const { data, error } = await supabase
     .from("notificaciones")
     .insert({
       usuario_id: usuario.usuario_id,
-      tipo,
+      tipo: tipoPersistir,
       canal: canal || "whatsapp",
-      payload: payload || {},
+      payload: payloadPersistir,
       estado: "pendiente",
     })
     .select()
@@ -39,13 +133,22 @@ async function crearNotificacion({ telefono, tipo, canal, destinatario, payload 
  * Recibe directamente usuario_id.
  */
 async function crearNotificacionInterna({ usuario_id, tipo, canal, payload }) {
+  const tipoPersistir = esTipoSolicitudRecarga(tipo) ? "solicitud_recarga" : tipo;
+  const payloadPersistir = esTipoSolicitudRecarga(tipo)
+    ? await normalizarPayloadSolicitudRecarga({
+      usuarioId: usuario_id,
+      payload,
+      forceMensaje: true,
+    })
+    : (payload || {});
+
   const { data, error } = await supabase
     .from("notificaciones")
     .insert({
       usuario_id,
-      tipo,
+      tipo: tipoPersistir,
       canal: canal || "whatsapp",
-      payload: payload || {},
+      payload: payloadPersistir,
       estado: "pendiente",
     })
     .select()
@@ -197,9 +300,37 @@ async function obtenerPendientesUsuario(telefono) {
   const esSolicitudRecarga = (t) => t === "solicitud_recarga" || t === "solicitud_recarga_inicio_mes" || t === "recordatorio_recarga";
   const esPago = (t) => t === "obligacion_cumplida" || t === "pago_confirmado";
 
-  const solicitudes = lista
-    .filter((n) => esSolicitudRecarga(n.tipo))
-    .map((n) => ({ ...n, tipo: "solicitud_recarga" }));
+  const saldoCache = new Map();
+  const solicitudes = [];
+  const fixesPersistentes = [];
+  for (const n of lista.filter((x) => esSolicitudRecarga(x.tipo))) {
+    const payloadNormalizado = await normalizarPayloadSolicitudRecarga({
+      usuarioId: n.usuario_id,
+      payload: n.payload,
+      forceMensaje: false,
+      saldoCache,
+    });
+
+    if (
+      n.tipo !== "solicitud_recarga"
+      || JSON.stringify(n.payload || {}) !== JSON.stringify(payloadNormalizado)
+    ) {
+      fixesPersistentes.push({ id: n.id, payload: payloadNormalizado, tipo: "solicitud_recarga" });
+    }
+
+    solicitudes.push({
+      ...n,
+      tipo: "solicitud_recarga",
+      payload: payloadNormalizado,
+    });
+  }
+
+  for (const fix of fixesPersistentes) {
+    await supabase
+      .from("notificaciones")
+      .update({ payload: fix.payload, tipo: fix.tipo })
+      .eq("id", fix.id);
+  }
 
   const pagos = lista
     .filter((n) => esPago(n.tipo))
@@ -263,6 +394,32 @@ async function obtenerPendientesHoyGlobal() {
 
   if (queryError) throw new Error(`Error buscando notificaciones pendientes de hoy: ${queryError.message}`);
 
+  const saldoCache = new Map();
+  const notificacionesNormalizadas = [];
+  for (const n of (pendientes || [])) {
+    const payloadNormalizado = await normalizarPayloadSolicitudRecarga({
+      usuarioId: n.usuario_id,
+      payload: n.payload,
+      forceMensaje: false,
+      nombreFallback: n?.usuarios?.nombre || null,
+      saldoCache,
+    });
+    notificacionesNormalizadas.push({
+      ...n,
+      tipo: "solicitud_recarga",
+      payload: payloadNormalizado,
+    });
+  }
+
+  if (notificacionesNormalizadas.length > 0) {
+    for (const n of notificacionesNormalizadas) {
+      await supabase
+        .from("notificaciones")
+        .update({ payload: n.payload, tipo: "solicitud_recarga" })
+        .eq("id", n.id);
+    }
+  }
+
   if (pendientes && pendientes.length > 0) {
     const idsActualizar = pendientes.map((notificacion) => notificacion.id);
 
@@ -282,8 +439,8 @@ async function obtenerPendientesHoyGlobal() {
   }
 
   return success({
-    total: (pendientes || []).length,
-    notificaciones: pendientes || [],
+    total: notificacionesNormalizadas.length,
+    notificaciones: notificacionesNormalizadas,
   });
 }
 

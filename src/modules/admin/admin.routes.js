@@ -323,4 +323,34 @@ router.post("/clientes/:telefono/crear-siguiente-mes", authAdmin, async (req, re
   }
 });
 
+// POST /api/admin/limpiar/pagos-huerfanos — LIMPIEZA: Eliminar pagos sin usuario válido
+router.post("/limpiar/pagos-huerfanos", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.limpiarPagosHuerfanos();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/limpiar/recargas-huerfanos — LIMPIEZA: Eliminar recargas sin usuario válido
+router.post("/limpiar/recargas-huerfanos", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.limpiarRecargasHuerfanos();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/limpiar/notificaciones-huerfanos — LIMPIEZA: Eliminar notificaciones sin usuario válido
+router.post("/limpiar/notificaciones-huerfanos", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.limpiarNotificacionesHuerfanos();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

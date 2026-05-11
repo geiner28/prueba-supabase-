@@ -8,7 +8,7 @@ const queryClientesSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().optional(),
-  plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
+  plan: z.enum(["tranquilidad", "respaldo"]).optional(),
   activo: z.coerce.boolean().optional(),
 });
 
@@ -30,7 +30,7 @@ const upsertUsuarioAdminSchema = z.object({
   apellido: z.string().optional(),
   correo: z.string().email().optional(),
   direccion: z.string().optional(),
-  plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
+  plan: z.enum(["tranquilidad", "respaldo"]).optional(),
   // Nuevos campos del rediseño 2026-04 (mockup modal "Agregar usuario")
   tipo_identificacion: z.enum(["CC", "NIT", "CE"]).optional(),
   numero_identificacion: z.string().max(32).optional(),
@@ -44,7 +44,7 @@ const updateUsuarioAdminSchema = z.object({
   apellido: z.string().optional(),
   correo: z.string().email().optional().nullable(),
   direccion: z.string().optional().nullable(),
-  plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
+  plan: z.enum(["tranquilidad", "respaldo"]).optional(),
   activo: z.boolean().optional(),
   tipo_identificacion: z.enum(["CC", "NIT", "CE"]).nullable().optional(),
   numero_identificacion: z.string().max(32).nullable().optional(),

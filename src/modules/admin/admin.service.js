@@ -14,6 +14,15 @@ const {
 } = require("../../utils/cuotasDistribucion");
 
 /**
+ * Serializa un error de Supabase de forma segura.
+ * Cuando Supabase devuelve HTML (ej. Cloudflare 522), error.message es undefined.
+ */
+function errMsg(e) {
+  if (!e) return "error desconocido";
+  return e.message || e.code || e.hint || JSON.stringify(e);
+}
+
+/**
  * Listar todos los clientes con paginación y búsqueda.
  */
 async function listarClientes({ page, limit, search, plan, activo }) {
@@ -41,21 +50,33 @@ async function listarClientes({ page, limit, search, plan, activo }) {
   }
 
   const { data, error, count } = await query;
-  if (error) throw new Error(`Error listando clientes: ${error.message}`);
+  if (error) throw new Error(`Error listando clientes: ${errMsg(error)}`);
 
   // Enriquecer cada cliente con datos de última obligación y saldo
   const clientesEnriquecidos = await Promise.all(
     data.map(async (cliente) => {
       try {
-        // 1. Obtener la última obligación activa o en progreso
-        const { data: ultimaObligacion } = await supabase
+        // 1. Obtener la última obligación del usuario (priorizando no suscripción)
+        let { data: ultimaObligacion } = await supabase
           .from("obligaciones")
-          .select("id, periodo, estado")
+          .select("id, periodo, estado, tipo_referencia")
           .eq("usuario_id", cliente.id)
-          .in("estado", ["activa", "en_progreso"])
+          .or("tipo_referencia.is.null,tipo_referencia.neq.suscripcion")
           .order("periodo", { ascending: false })
           .limit(1)
           .single();
+
+        // Fallback: si el usuario solo tiene obligaciones de suscripción, tomar la más reciente.
+        if (!ultimaObligacion) {
+          const { data: ultimaObligacionAny } = await supabase
+            .from("obligaciones")
+            .select("id, periodo, estado, tipo_referencia")
+            .eq("usuario_id", cliente.id)
+            .order("periodo", { ascending: false })
+            .limit(1)
+            .single();
+          ultimaObligacion = ultimaObligacionAny || null;
+        }
 
         let datosObligacion = {
           total_facturas: 0,
@@ -63,18 +84,17 @@ async function listarClientes({ page, limit, search, plan, activo }) {
           facturas_pendientes: 0
         };
 
-        // 2. Si existe obligación, obtener sus facturas
-        if (ultimaObligacion) {
-          const { data: facturas } = await supabase
-            .from("facturas")
-            .select("id, estado")
-            .eq("obligacion_id", ultimaObligacion.id);
+        // 2. Conteo global de facturas del usuario (excluye suscripciones)
+        const { data: facturasUsuario } = await supabase
+          .from("facturas")
+          .select("id, estado, tipo_referencia")
+          .eq("usuario_id", cliente.id)
+          .or("tipo_referencia.is.null,tipo_referencia.neq.suscripcion");
 
-          if (facturas && facturas.length > 0) {
-            datosObligacion.total_facturas = facturas.length;
-            datosObligacion.facturas_pagadas = facturas.filter(f => f.estado === "pagada").length;
-            datosObligacion.facturas_pendientes = facturas.filter(f => f.estado !== "pagada").length;
-          }
+        if (facturasUsuario && facturasUsuario.length > 0) {
+          datosObligacion.total_facturas = facturasUsuario.length;
+          datosObligacion.facturas_pagadas = facturasUsuario.filter((f) => f.estado === "pagada").length;
+          datosObligacion.facturas_pendientes = facturasUsuario.filter((f) => f.estado !== "pagada").length;
         }
 
         // 3. Calcular saldo global del usuario (recargas aprobadas - pagos realizados)
@@ -154,20 +174,10 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     periodoTarget = normalizarPeriodo(periodoTarget);
   }
 
-  // Seguridad de consistencia: si el periodo consultado ya quedó completamente
-  // pagado, garantizar la creación automática del siguiente mes.
-  try {
-    await crearSiguienteMesSiCorresponde(userId, periodoTarget);
-  } catch (err) {
-    console.error("[ADMIN] Error evaluando cierre mensual automático:", err.message);
-  }
-
-  // Garantizar que exista la obligación/factura de suscripción del período consultado.
-  try {
-    await crearSuscripcionInicial(userId, userData.plan, userData.creado_en, periodoTarget);
-  } catch (err) {
-    console.error("[ADMIN] Error garantizando suscripción del periodo:", err.message);
-  }
+  // Importante: este endpoint es solo de lectura.
+  // La creación del siguiente mes se ejecuta únicamente por:
+  // 1) cierre de mes al completar/pagar obligaciones,
+  // 2) acción manual desde el botón de admin.
 
   // Obtener datos en paralelo
   const [
@@ -208,9 +218,26 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     .filter(r => r.estado === "aprobada")
     .reduce((sum, r) => sum + Number(r.monto), 0);
 
-  const totalPagosPagados = (pagosTotal || [])
-    .filter(p => p.estado === "pagado")
-    .reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
+  const pagosPagados = (pagosTotal || []).filter((p) => p.estado === "pagado");
+  const totalPagosPagadosRegistrados = pagosPagados.reduce(
+    (sum, p) => sum + Number(p.monto_aplicado || 0),
+    0
+  );
+
+  // Fallback legacy: hay clientes con facturas en estado "pagada"
+  // pero sin registro equivalente en tabla pagos.
+  const facturasPagadasTotal = (obligacionesTotal || []).flatMap((o) =>
+    (o.facturas || []).filter((f) => f.estado === "pagada")
+  );
+  const facturaIdsConPagoTotal = new Set(
+    pagosPagados.map((p) => p.factura_id).filter(Boolean)
+  );
+  const totalPagosPagadosLegacy = facturasPagadasTotal
+    .filter((f) => !facturaIdsConPagoTotal.has(f.id))
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+
+  const totalPagosPagados =
+    totalPagosPagadosRegistrados + totalPagosPagadosLegacy;
 
   const saldoDisponible = Math.max(0, totalRecargasAprobadas - totalPagosPagados);
 
@@ -222,15 +249,27 @@ async function perfilCompletoCliente(telefono, periodo = null) {
   const totalRecargasAprobadasMes = (recargasMes || [])
     .reduce((sum, r) => sum + Number(r.monto), 0);
 
-  // Total pagos del mes (filtrado por periodo de las facturas)
-  const totalPagosRealizadosMes = (pagosMes || [])
-    .filter(p => p.facturas && p.facturas.periodo === periodoTarget)
-    .reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
-
   // Facturas del mes con validacion_estado='validada' (modelo nuevo)
   const allFacturasMes = (obligacionesMes || []).reduce((acc, obl) => {
     return acc.concat(obl.facturas || []);
   }, []);
+
+  // Total pagos del mes (filtrado por periodo de las facturas)
+  // + fallback legacy por facturas pagadas sin registro en tabla pagos.
+  const pagosPagadosMes = (pagosMes || []).filter(
+    (p) => p.facturas && p.facturas.periodo === periodoTarget
+  );
+  const totalPagosMesRegistrados = pagosPagadosMes.reduce(
+    (sum, p) => sum + Number(p.monto_aplicado || 0),
+    0
+  );
+  const facturaIdsConPagoMes = new Set(
+    pagosPagadosMes.map((p) => p.factura_id).filter(Boolean)
+  );
+  const totalPagosMesLegacy = allFacturasMes
+    .filter((f) => f.estado === "pagada" && !facturaIdsConPagoMes.has(f.id))
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+  const totalPagosRealizadosMes = totalPagosMesRegistrados + totalPagosMesLegacy;
 
   const facturasValidadasMes = allFacturasMes.filter(
     f => f.validacion_estado === "validada"
@@ -399,6 +438,8 @@ async function perfilCompletoCliente(telefono, periodo = null) {
 
 /**
  * Historial de pagos con filtros.
+ * IMPORTANTE: Filtra y elimina pagos huérfanos (sin usuario válido) para evitar mostrar
+ * registros de usuarios ya eliminados.
  */
 async function historialPagos({ telefono, periodo, estado, page, limit }) {
   const offset = (page - 1) * limit;
@@ -422,7 +463,7 @@ async function historialPagos({ telefono, periodo, estado, page, limit }) {
   }
 
   const { data, error, count } = await query;
-  if (error) throw new Error(`Error listando pagos: ${error.message}`);
+  if (error) throw new Error(`Error listando pagos: ${errMsg(error)}`);
 
   // Filtrar por periodo si aplica (se filtra post-query por el join)
   let resultado = data || [];
@@ -431,12 +472,37 @@ async function historialPagos({ telefono, periodo, estado, page, limit }) {
     resultado = resultado.filter(p => p.facturas && p.facturas.periodo === periodoNorm);
   }
 
+  // CRUCIAL: Filtrar pagos huérfanos (usuarios null = usuario fue eliminado)
+  // También detecta pagos con facturas null (factura eliminada)
+  resultado = resultado.filter(p => {
+    if (!p.usuarios) {
+      console.warn(`[HISTORIAL_PAGOS] Pago ${p.id} tiene usuario_id pero no existe usuario en BD. Será ignorado.`);
+      return false;
+    }
+    if (!p.facturas) {
+      console.warn(`[HISTORIAL_PAGOS] Pago ${p.id} tiene factura_id pero no existe factura en BD. Será ignorado.`);
+      return false;
+    }
+    return true;
+  });
+
+  // Si hay pagos huérfanos, limpiarlos en background (sin bloquear la query)
+  // Identificar IDs de pagos a eliminar
+  const pagosHuerfanos = (data || []).filter(p => !p.usuarios || !p.facturas);
+  if (pagosHuerfanos.length > 0) {
+    const idsHuerfanos = pagosHuerfanos.map(p => p.id);
+    // Limpiar en background sin esperar
+    supabase.from("pagos").delete().in("id", idsHuerfanos)
+      .then(() => console.log(`[HISTORIAL_PAGOS] Limpiados ${idsHuerfanos.length} pagos huérfanos`))
+      .catch(e => console.error(`[HISTORIAL_PAGOS] Error limpiando pagos huérfanos:`, e.message));
+  }
+
   return success({
     pagos: resultado,
-    total: count,
+    total: resultado.length || 0, // Usar longitud filtrada
     page,
     limit,
-    total_pages: Math.ceil((count || 0) / limit),
+    total_pages: Math.ceil((resultado.length || 0) / limit),
   });
 }
 
@@ -445,7 +511,7 @@ async function historialPagos({ telefono, periodo, estado, page, limit }) {
  * Parámetros:
  *   - year: año (ej: 2026)
  *   - month: mes (ej: 2 para febrero, 1-12)
- *   - plan: plan a filtrar ('all', 'control', 'tranquilidad', 'respaldo')
+ *   - plan: plan a filtrar ('all', 'tranquilidad', 'respaldo')
  */
 async function dashboard(params = {}) {
   const { year, month, plan = 'all' } = params;
@@ -521,10 +587,19 @@ async function dashboard(params = {}) {
   // 3.6 Pagos completados GLOBALES (sin filtro de período) — para saldo disponible
   let pagosGlobalQuery = supabase
     .from("pagos")
-    .select("monto_aplicado, usuario_id")
+    .select("monto_aplicado, usuario_id, factura_id")
     .eq("estado", "pagado");
   if (usuariosIds.length > 0) {
     pagosGlobalQuery = pagosGlobalQuery.in("usuario_id", usuariosIds);
+  }
+
+  // Fallback legacy para cash out global (facturas pagadas sin registro en pagos)
+  let facturasPagadasGlobalQuery = supabase
+    .from("facturas")
+    .select("id, monto, usuario_id")
+    .eq("estado", "pagada");
+  if (usuariosIds.length > 0) {
+    facturasPagadasGlobalQuery = facturasPagadasGlobalQuery.in("usuario_id", usuariosIds);
   }
 
   // Ejecutar primero: recargas y facturas (para después filtrar pagos)
@@ -534,12 +609,14 @@ async function dashboard(params = {}) {
     { data: todasLasFacturas },
     { data: recargasGlobalData },
     { data: pagosGlobalData },
+    { data: facturasPagadasGlobalData },
   ] = await Promise.all([
     recargasQuery,
     facturasNoPageQuery,
     todasFacturasQuery,
     recargasGlobalQuery,
     pagosGlobalQuery,
+    facturasPagadasGlobalQuery,
   ]);
 
   // 3.4 Pagos completados SOLO de facturas en este período
@@ -563,10 +640,17 @@ async function dashboard(params = {}) {
   );
 
   // Métrica 2: Total Pagado
-  const totalPagado = (pagosData || []).reduce(
+  const totalPagosRegistradosPeriodo = (pagosData || []).reduce(
     (sum, p) => sum + Number(p.monto_aplicado || 0),
     0
   );
+  const facturaIdsConPagoPeriodo = new Set(
+    (pagosData || []).map((p) => p.factura_id).filter(Boolean)
+  );
+  const totalPagosLegacyPeriodo = (todasLasFacturas || [])
+    .filter((f) => f.estado === "pagada" && !facturaIdsConPagoPeriodo.has(f.id))
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+  const totalPagado = totalPagosRegistradosPeriodo + totalPagosLegacyPeriodo;
 
   // Métrica 3: Saldo Disponible GLOBAL (todas las recargas - todos los pagos, sin filtro de período)
   // El saldo es acumulativo como una cuenta bancaria, no depende del mes seleccionado.
@@ -574,10 +658,17 @@ async function dashboard(params = {}) {
     (sum, r) => sum + Number(r.monto || 0),
     0
   );
-  const totalPagosGlobal = (pagosGlobalData || []).reduce(
+  const totalPagosGlobalRegistrados = (pagosGlobalData || []).reduce(
     (sum, p) => sum + Number(p.monto_aplicado || 0),
     0
   );
+  const facturaIdsConPagoGlobal = new Set(
+    (pagosGlobalData || []).map((p) => p.factura_id).filter(Boolean)
+  );
+  const totalPagosGlobalLegacy = (facturasPagadasGlobalData || [])
+    .filter((f) => !facturaIdsConPagoGlobal.has(f.id))
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+  const totalPagosGlobal = totalPagosGlobalRegistrados + totalPagosGlobalLegacy;
   const saldoDisponible = Math.max(0, totalRecargasGlobal - totalPagosGlobal);
 
   // Métrica 4: Cantidad de Transacciones (recargas aprobadas)
@@ -640,7 +731,6 @@ async function dashboard(params = {}) {
 
   // 5.3 Distribución de Usuarios por Plan
   const distribucionPlanes = {
-    control: (usuarios || []).filter((u) => u.plan === "control").length,
     tranquilidad: (usuarios || []).filter((u) => u.plan === "tranquilidad").length,
     respaldo: (usuarios || []).filter((u) => u.plan === "respaldo").length,
   };
@@ -679,7 +769,7 @@ async function dashboardPeriodosDisponibles() {
     .neq("tipo_referencia", "suscripcion")
     .neq("estado", "sin_factura");
 
-  if (error) throw new Error(`Error obteniendo periodos dashboard: ${error.message}`);
+  if (error) throw new Error(`Error obteniendo periodos dashboard: ${errMsg(error)}`);
 
   const periodosSet = new Set();
   for (const row of data || []) {
@@ -776,7 +866,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
       .single();
 
     if (findErr && findErr.code !== "PGRST116") {
-      throw new Error(`Error buscando usuario: ${findErr.message}`);
+      throw new Error(`Error buscando usuario: ${errMsg(findErr)}`);
     }
     existing = data;
   }
@@ -817,7 +907,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
 
       const mappedUpdateErr = mapUsuarioDbError(updateErr);
       if (mappedUpdateErr) return mappedUpdateErr;
-      if (updateErr) throw new Error(`Error actualizando usuario: ${updateErr.message}`);
+      if (updateErr) throw new Error(`Error actualizando usuario: ${errMsg(updateErr)}`);
     }
 
     return success({
@@ -836,7 +926,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
       apellido: apellido || "",
       correo: correo || null,
       direccion: direccion || null,
-      plan: plan || undefined, // Dejar que DB use su DEFAULT 'control'
+      plan: plan || "tranquilidad", // Default: tranquilidad
       tipo_identificacion: tipo_identificacion || null,
       numero_identificacion: numero_identificacion || null,
       ciudad: ciudad || null,
@@ -863,7 +953,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
   if (createErr) {
     const mappedCreateErr = mapUsuarioDbError(createErr);
     if (mappedCreateErr) return mappedCreateErr;
-    throw new Error(`Error creando usuario: ${createErr.message}`);
+    throw new Error(`Error creando usuario: ${errMsg(createErr)}`);
   }
 
   // 4. Crear ajustes por defecto
@@ -876,7 +966,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
   }
 
   // 5. Crear programación de recargas por defecto según el plan
-  const planUsuario = newUser.plan || "control";
+  const planUsuario = newUser.plan || "tranquilidad";
   const esPlanDoble = planUsuario === "tranquilidad" || planUsuario === "respaldo";
   const { error: progErr } = await supabase
     .from("programacion_recargas")
@@ -962,7 +1052,7 @@ async function updateUsuarioAdmin(userId, fields) {
     .select()
     .single();
 
-  if (updateErr) throw new Error(`Error actualizando usuario: ${updateErr.message}`);
+  if (updateErr) throw new Error(`Error actualizando usuario: ${errMsg(updateErr)}`);
 
   return success({
     usuario_id: updated.id,
@@ -994,7 +1084,7 @@ async function getUsuarioByTelefono(telefono) {
     .single();
 
   if (error && error.code !== "PGRST116") {
-    throw new Error(`Error buscando usuario: ${error.message}`);
+    throw new Error(`Error buscando usuario: ${errMsg(error)}`);
   }
 
   if (!data) {
@@ -1126,7 +1216,7 @@ async function listarNotificacionesAdmin(filters = {}) {
     if (hasta) legacyQuery = legacyQuery.lte("creado_en", `${hasta}T23:59:59Z`);
 
     const { data: legacyData, error: legacyError } = await legacyQuery;
-    if (legacyError) throw new Error(`Error listando notificaciones: ${legacyError.message}`);
+    if (legacyError) throw new Error(`Error listando notificaciones: ${errMsg(legacyError)}`);
 
     const filtradas = (legacyData || []).filter((n) => normalizarDestinatario(n) === destinatario);
     const paginadas = filtradas.slice(offset, offset + limit);
@@ -1140,7 +1230,7 @@ async function listarNotificacionesAdmin(filters = {}) {
     });
   }
 
-  if (error) throw new Error(`Error listando notificaciones: ${error.message}`);
+  if (error) throw new Error(`Error listando notificaciones: ${errMsg(error)}`);
 
   return success({
     notificaciones: data || [],
@@ -1216,7 +1306,7 @@ async function obtenerEstadisticasNotificaciones(filters = {}) {
     if (hasta) legacyQuery = legacyQuery.lte("creado_en", `${hasta}T23:59:59Z`);
 
     const { data: legacyTodas, error: legacyError } = await legacyQuery;
-    if (legacyError) throw new Error(`Error obteniendo estadísticas: ${legacyError.message}`);
+    if (legacyError) throw new Error(`Error obteniendo estadísticas: ${errMsg(legacyError)}`);
 
     const filtradas = (legacyTodas || []).filter((n) => normalizarDestinatario(n) === destinatario);
     const total = filtradas.length;
@@ -1246,10 +1336,10 @@ async function obtenerEstadisticasNotificaciones(filters = {}) {
     });
   }
 
-  if (totalAllRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalAllRes.error.message}`);
-  if (totalPendienteRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalPendienteRes.error.message}`);
-  if (totalEnviadaRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalEnviadaRes.error.message}`);
-  if (totalLeidaRes?.error) throw new Error(`Error obteniendo estadísticas: ${totalLeidaRes.error.message}`);
+  if (totalAllRes?.error) throw new Error(`Error obteniendo estadísticas: ${errMsg(totalAllRes.error)}`);
+  if (totalPendienteRes?.error) throw new Error(`Error obteniendo estadísticas: ${errMsg(totalPendienteRes.error)}`);
+  if (totalEnviadaRes?.error) throw new Error(`Error obteniendo estadísticas: ${errMsg(totalEnviadaRes.error)}`);
+  if (totalLeidaRes?.error) throw new Error(`Error obteniendo estadísticas: ${errMsg(totalLeidaRes.error)}`);
   
   const distribucionTipos = {};
   (notificacionesTodas || []).forEach(notif => {
@@ -1308,7 +1398,7 @@ async function obtenerNotificacionesCliente(usuario_id, filters = {}) {
   }
 
   const { data, error } = await query;
-  if (error) throw new Error(`Error obteniendo notificaciones del cliente: ${error.message}`);
+  if (error) throw new Error(`Error obteniendo notificaciones del cliente: ${errMsg(error)}`);
 
   // Obtener datos del usuario
   const { data: usuario } = await supabase
@@ -1351,7 +1441,7 @@ async function marcarNotificacionEnviada(notificacion_id, admin_id = null) {
     .select()
     .single();
 
-  if (updateErr) throw new Error(`Error actualizando notificación: ${updateErr.message}`);
+  if (updateErr) throw new Error(`Error actualizando notificación: ${errMsg(updateErr)}`);
 
   // Registrar en audit_log
   try {
@@ -1391,7 +1481,7 @@ async function marcarNotificacionesEnviadasBatch(notificacion_ids = [], admin_id
     .in("id", notificacion_ids)
     .select();
 
-  if (updateErr) throw new Error(`Error actualizando notificaciones: ${updateErr.message}`);
+  if (updateErr) throw new Error(`Error actualizando notificaciones: ${errMsg(updateErr)}`);
 
   // Registrar en audit_log (una entrada por lote)
   try {
@@ -1489,7 +1579,7 @@ async function generarNotificacionesMock() {
       .select("*, usuarios(nombre, apellido, telefono)");
 
     if (error) {
-      return errors(`Error insertando notificaciones mock: ${error.message}`, 500);
+      return errors(`Error insertando notificaciones mock: ${errMsg(error)}`, 500);
     }
 
     console.warn(`✅ ${insertados.length} notificaciones de prueba creadas`);
@@ -1535,7 +1625,7 @@ async function listarAlertasAdmin(filters = {}) {
   }
 
   const { data, error, count } = await query;
-  if (error) throw new Error(`Error listando alertas: ${error.message}`);
+  if (error) throw new Error(`Error listando alertas: ${errMsg(error)}`);
 
   return success({
     alertas: data || [],
@@ -1625,7 +1715,7 @@ async function listarNotificacionesAutomaticas(filters = {}) {
   }
 
   const { data, error, count } = await query;
-  if (error) throw new Error(`Error listando notificaciones automáticas: ${error.message}`);
+  if (error) throw new Error(`Error listando notificaciones automáticas: ${errMsg(error)}`);
 
   return success({
     notificaciones: data || [],
@@ -1701,7 +1791,7 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
     query = query.range(offset, offset + limit - 1);
 
     const { data, error, count } = await query;
-    if (error) throw new Error(`Error listando facturas: ${error.message}`);
+    if (error) throw new Error(`Error listando facturas: ${errMsg(error)}`);
 
     // Enriquecer datos con información adicional
     const facturasEnriquecidas = (data || []).map(f => ({
@@ -1801,7 +1891,7 @@ async function obtenerNotificacionesAcciones(filters = {}) {
     if (tipo === "factura") queryFacturas = queryFacturas.select("*");
 
     const { data: facturas, error: facErr } = await queryFacturas;
-    if (facErr) throw new Error(`Error obteniendo facturas: ${facErr.message}`);
+    if (facErr) throw new Error(`Error obteniendo facturas: ${errMsg(facErr)}`);
 
     // 2. Obtener recargas pendientes de validación
     let queryRecargas = supabase
@@ -1823,7 +1913,7 @@ async function obtenerNotificacionesAcciones(filters = {}) {
     if (tipo === "recarga") queryRecargas = queryRecargas.select("*");
 
     const { data: recargas, error: recErr } = await queryRecargas;
-    if (recErr) throw new Error(`Error obteniendo recargas: ${recErr.message}`);
+    if (recErr) throw new Error(`Error obteniendo recargas: ${errMsg(recErr)}`);
 
     // 3. Procesar y agrupar por usuario
     const accionesPorUsuario = {};
@@ -1937,7 +2027,7 @@ async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde
       if (desde) q = q.gte("creado_en", desde);
       if (hasta) q = q.lte("creado_en", hasta);
       const { data, error } = await q;
-      if (error) throw new Error(`Error consultando recargas: ${error.message}`);
+      if (error) throw new Error(`Error consultando recargas: ${errMsg(error)}`);
       (data || []).forEach((r) => {
         fuentes.push({
           id: r.id,
@@ -1960,7 +2050,7 @@ async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde
       if (desde) q = q.gte("creado_en", desde);
       if (hasta) q = q.lte("creado_en", hasta);
       const { data, error } = await q;
-      if (error) throw new Error(`Error consultando obligaciones: ${error.message}`);
+      if (error) throw new Error(`Error consultando obligaciones: ${errMsg(error)}`);
       (data || []).forEach((o) => {
         fuentes.push({
           id: o.id,
@@ -1983,7 +2073,7 @@ async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde
       if (desde) q = q.gte("creado_en", desde);
       if (hasta) q = q.lte("creado_en", hasta);
       const { data, error } = await q;
-      if (error) throw new Error(`Error consultando pagos: ${error.message}`);
+      if (error) throw new Error(`Error consultando pagos: ${errMsg(error)}`);
       (data || []).forEach((p) => {
         fuentes.push({
           id: p.id,
@@ -2006,7 +2096,7 @@ async function historialUnificado({ page = 1, limit = 8, tipo, usuario_id, desde
       if (desde) q = q.gte("creado_en", desde);
       if (hasta) q = q.lte("creado_en", hasta);
       const { data, error } = await q;
-      if (error) throw new Error(`Error consultando usuarios: ${error.message}`);
+      if (error) throw new Error(`Error consultando usuarios: ${errMsg(error)}`);
       (data || []).forEach((u) => {
         fuentes.push({
           id: u.id,
@@ -2055,7 +2145,7 @@ async function listarTransacciones({ page = 1, limit = 8, tipo, usuario_id, sear
         .select("id, creado_en, ejecutado_en, usuario_id, monto_aplicado, proveedor_pago, referencia_pago, estado, facturas(servicio, obligacion_id, obligaciones(servicio, tipo_referencia, numero_referencia)), usuarios(nombre, apellido)");
       if (usuario_id) q = q.eq("usuario_id", usuario_id);
       const { data, error } = await q;
-      if (error) throw new Error(`Error consultando pagos: ${error.message}`);
+      if (error) throw new Error(`Error consultando pagos: ${errMsg(error)}`);
       (data || []).forEach((p) => {
         const obligacion = p.facturas?.obligaciones;
         const nombre = p.facturas?.servicio || obligacion?.servicio || null;
@@ -2082,7 +2172,7 @@ async function listarTransacciones({ page = 1, limit = 8, tipo, usuario_id, sear
         .select("id, creado_en, usuario_id, monto, referencia_tx, estado, usuarios(nombre, apellido)");
       if (usuario_id) q = q.eq("usuario_id", usuario_id);
       const { data, error } = await q;
-      if (error) throw new Error(`Error consultando recargas: ${error.message}`);
+      if (error) throw new Error(`Error consultando recargas: ${errMsg(error)}`);
       (data || []).forEach((r) => {
         const nombreCompleto = [r.usuarios?.nombre, r.usuarios?.apellido].filter(Boolean).join(" ");
         items.push({
@@ -2147,6 +2237,172 @@ async function crearSiguienteMesManual(telefono, periodoOrigen) {
   }
 }
 
+/**
+ * LIMPIEZA: Eliminar todos los pagos huérfanos (sin usuario válido en tabla usuarios).
+ * Esto ocurre cuando hay un fallo en la cascada o eliminación parcial.
+ * Retorna: cantidad de pagos eliminados.
+ */
+async function limpiarPagosHuerfanos() {
+  try {
+    // 1. Obtener todos los pagos que no tienen usuario válido en la BD
+    const { data: pagosHuerfanos, error: selectErr } = await supabase
+      .from("pagos")
+      .select("id, usuario_id, creado_en");
+
+    if (selectErr) throw new Error(`Error consultando pagos: ${selectErr.message}`);
+
+    if (!pagosHuerfanos || pagosHuerfanos.length === 0) {
+      return success({ pagos_limpiados: 0, mensaje: "No hay pagos huérfanos" });
+    }
+
+    // 2. Validar cuáles tienen usuario_id sin usuario en usuarios tabla
+    const { data: usuariosValidos } = await supabase.from("usuarios").select("id");
+    const usuariosValidosSet = new Set((usuariosValidos || []).map(u => u.id));
+
+    const idsAEliminar = pagosHuerfanos
+      .filter(p => !usuariosValidosSet.has(p.usuario_id))
+      .map(p => p.id);
+
+    if (idsAEliminar.length === 0) {
+      return success({ pagos_limpiados: 0, mensaje: "No hay pagos sin usuario válido" });
+    }
+
+    // 3. Eliminar los pagos huérfanos
+    const { error: deleteErr } = await supabase
+      .from("pagos")
+      .delete()
+      .in("id", idsAEliminar);
+
+    if (deleteErr) throw new Error(`Error eliminando pagos huérfanos: ${deleteErr.message}`);
+
+    console.log(`[ADMIN] Limpiados ${idsAEliminar.length} pagos huérfanos (sin usuario válido)`);
+
+    return success({
+      pagos_limpiados: idsAEliminar.length,
+      ids_eliminados: idsAEliminar,
+      mensaje: `${idsAEliminar.length} pagos huérfanos eliminados correctamente`
+    });
+  } catch (err) {
+    console.error("Error en limpiarPagosHuerfanos:", err.message);
+    return errors.internal(err.message);
+  }
+}
+
+/**
+ * LIMPIEZA: Eliminar todas las recargas huérfanas (sin usuario válido en tabla usuarios).
+ * Retorna: cantidad de recargas eliminadas.
+ */
+async function limpiarRecargasHuerfanos() {
+  try {
+    // 1. Obtener todas las recargas que no tienen usuario válido en la BD
+    const { data: recargasHuerfanas, error: selectErr } = await supabase
+      .from("recargas")
+      .select("id, usuario_id, creado_en");
+
+    if (selectErr) throw new Error(`Error consultando recargas: ${selectErr.message}`);
+
+    if (!recargasHuerfanas || recargasHuerfanas.length === 0) {
+      return success({ recargas_limpiadas: 0, mensaje: "No hay recargas huérfanas" });
+    }
+
+    // 2. Validar cuáles tienen usuario_id sin usuario en usuarios tabla
+    const { data: usuariosValidos } = await supabase.from("usuarios").select("id");
+    const usuariosValidosSet = new Set((usuariosValidos || []).map(u => u.id));
+
+    const idsAEliminar = recargasHuerfanas
+      .filter(r => !usuariosValidosSet.has(r.usuario_id))
+      .map(r => r.id);
+
+    if (idsAEliminar.length === 0) {
+      return success({ recargas_limpiadas: 0, mensaje: "No hay recargas sin usuario válido" });
+    }
+
+    // 3. Eliminar las recargas huérfanas (primero eliminar datos relacionados)
+    // Eliminar recargasPayload relacionadas
+    const { error: payloadErr } = await supabase
+      .from("recargas_payload")
+      .delete()
+      .in("recarga_id", idsAEliminar);
+    if (payloadErr) throw new Error(`Error eliminando payloads: ${payloadErr.message}`);
+
+    // Eliminar revisiones relacionadas a recargas
+    const { error: revErr } = await supabase
+      .from("revisiones_admin")
+      .delete()
+      .in("recarga_id", idsAEliminar);
+    if (revErr) throw new Error(`Error eliminando revisiones: ${revErr.message}`);
+
+    // Finalmente eliminar las recargas
+    const { error: deleteErr } = await supabase
+      .from("recargas")
+      .delete()
+      .in("id", idsAEliminar);
+
+    if (deleteErr) throw new Error(`Error eliminando recargas huérfanas: ${deleteErr.message}`);
+
+    console.log(`[ADMIN] Limpiadas ${idsAEliminar.length} recargas huérfanas (sin usuario válido)`);
+
+    return success({
+      recargas_limpiadas: idsAEliminar.length,
+      ids_eliminados: idsAEliminar,
+      mensaje: `${idsAEliminar.length} recargas huérfanas eliminadas correctamente`
+    });
+  } catch (err) {
+    console.error("Error en limpiarRecargasHuerfanos:", err.message);
+    return errors.internal(err.message);
+  }
+}
+
+/**
+ * LIMPIEZA: Eliminar todas las notificaciones huérfanas (sin usuario válido en tabla usuarios).
+ * Retorna: cantidad de notificaciones eliminadas.
+ */
+async function limpiarNotificacionesHuerfanos() {
+  try {
+    // 1. Obtener todas las notificaciones que no tienen usuario válido en la BD
+    const { data: notificacionesHuerfanas, error: selectErr } = await supabase
+      .from("notificaciones")
+      .select("id, usuario_id, creado_en");
+
+    if (selectErr) throw new Error(`Error consultando notificaciones: ${selectErr.message}`);
+
+    if (!notificacionesHuerfanas || notificacionesHuerfanas.length === 0) {
+      return success({ notificaciones_limpiadas: 0, mensaje: "No hay notificaciones huérfanas" });
+    }
+
+    // 2. Validar cuáles tienen usuario_id sin usuario en usuarios tabla
+    const { data: usuariosValidos } = await supabase.from("usuarios").select("id");
+    const usuariosValidosSet = new Set((usuariosValidos || []).map(u => u.id));
+
+    const idsAEliminar = notificacionesHuerfanas
+      .filter(n => !usuariosValidosSet.has(n.usuario_id))
+      .map(n => n.id);
+
+    if (idsAEliminar.length === 0) {
+      return success({ notificaciones_limpiadas: 0, mensaje: "No hay notificaciones sin usuario válido" });
+    }
+
+    // 3. Eliminar las notificaciones huérfanas
+    const { error: deleteErr } = await supabase
+      .from("notificaciones")
+      .delete()
+      .in("id", idsAEliminar);
+
+    if (deleteErr) throw new Error(`Error eliminando notificaciones huérfanas: ${deleteErr.message}`);
+
+    console.log(`[ADMIN] Limpiadas ${idsAEliminar.length} notificaciones huérfanas (sin usuario válido)`);
+
+    return success({
+      notificaciones_limpiadas: idsAEliminar.length,
+      ids_eliminados: idsAEliminar,
+      mensaje: `${idsAEliminar.length} notificaciones huérfanas eliminadas correctamente`
+    });
+  } catch (err) {
+    console.error("Error en limpiarNotificacionesHuerfanos:", err.message);
+    return errors.internal(err.message);
+  }
+}
+
 module.exports = {
   listarClientes,
   perfilCompletoCliente,
@@ -2176,4 +2432,8 @@ module.exports = {
   // Transacciones unificadas
   listarTransacciones,
   crearSiguienteMesManual,
+  // Limpieza de datos huérfanos
+  limpiarPagosHuerfanos,
+  limpiarRecargasHuerfanos,
+  limpiarNotificacionesHuerfanos,
 };

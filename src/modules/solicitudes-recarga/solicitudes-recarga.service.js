@@ -14,17 +14,23 @@ const DIAS_SIN_VENCIMIENTO = 15;
 
 // Importar la función interna (sin resolver teléfono)
 let crearNotificacionInterna;
+let generarMensajeSolicitudRecarga;
 try {
-  crearNotificacionInterna = require("../notificaciones/notificaciones.service").crearNotificacionInterna;
+  const notificacionesService = require("../notificaciones/notificaciones.service");
+  crearNotificacionInterna = notificacionesService.crearNotificacionInterna;
+  generarMensajeSolicitudRecarga = notificacionesService.generarMensajeSolicitudRecarga;
 } catch (e) {
   // Fallback si el módulo no existe
   crearNotificacionInterna = async () => null;
+  generarMensajeSolicitudRecarga = ({ nombre_usuario, saldo_actual, valor_a_recargar }) => {
+    const fmt = (v) => `$ ${Number(v || 0).toLocaleString('es-CO')}`;
+    return `${nombre_usuario || 'Usuario'} 👋🏼\n\nEs momento de recargar tu cuenta para cubrir tus próximas obligaciones 🙌🏼\n\nTu saldo actual en deOne es de ${fmt(saldo_actual)}\n\nValor a recargar: ${fmt(valor_a_recargar)}\n\nPuedes hacer la recarga a la llave 0090944088.\n\nCuando la hagas, envíame el comprobante y yo me encargo del resto deOne 👍🏼`;
+  };
 }
 
 /**
  * Genera solicitudes de recarga automáticas basadas en el plan del usuario.
  * 
- * Plan CONTROL: 1 cuota = monto total de todas las facturas validadas
  * Plan TRANQUILIDAD/RESPALDO: 2 cuotas distribuidas por fecha de vencimiento
  * 
  * Lógica de distribución para 2 cuotas:
@@ -96,31 +102,13 @@ async function generarSolicitudes(body) {
     return errors.badRequest("El monto total de las facturas es 0. No se puede generar solicitud.");
   }
 
-  // 7. Generar solicitudes según el plan
+  // 7. Generar solicitudes según el plan (Todos los planes ahora tienen 2 cuotas)
   const solicitudes = [];
   const periodo = obligacion.periodo;
 
-  if (plan === "control") {
-    // PLAN CONTROL: 1 sola cuota por el total
-    const fechaLimite = calcularFechaLimiteCuota1(facturas, periodo);
-    const fechaRecordatorio = restarDias(fechaLimite, 5);
-
-    solicitudes.push({
-      usuario_id: usuario.usuario_id,
-      obligacion_id,
-      numero_cuota: 1,
-      total_cuotas: 1,
-      monto_solicitado: montoTotal,
-      fecha_limite: fechaLimite,
-      fecha_recordatorio: fechaRecordatorio,
-      facturas_ids: facturas.map(f => f.id),
-      plan,
-      estado: "pendiente",
-    });
-
-  } else {
-    // PLAN TRANQUILIDAD / RESPALDO: 2 cuotas
-    const distribucion = distribuirFacturasEnCuotas(facturas, periodo);
+  // PLAN TRANQUILIDAD / RESPALDO: 2 cuotas
+  const distribucion = distribuirFacturasEnCuotas(facturas, periodo);
+  {
 
     // Cuota 1
     if (distribucion.cuota1.facturas.length > 0) {
@@ -167,6 +155,14 @@ async function generarSolicitudes(body) {
 
   // 9. Generar notificación para la primera cuota
   const primeraCuota = insertadas[0];
+  const saldoActual = await calcularSaldoUsuario(usuario.usuario_id, periodo);
+  const valorRecargaReal = Number(primeraCuota.monto_solicitado || 0);
+  const mensajeRecarga = generarMensajeSolicitudRecarga({
+    nombre_usuario: usuario.usuario?.nombre || usuario.usuario?.telefono || 'Usuario',
+    saldo_actual: saldoActual,
+    valor_a_recargar: valorRecargaReal,
+  });
+
   await crearNotificacionInterna({
     usuario_id: usuario.usuario_id,
     tipo: "solicitud_recarga",
@@ -176,11 +172,14 @@ async function generarSolicitudes(body) {
       numero_cuota: primeraCuota.numero_cuota,
       total_cuotas: primeraCuota.total_cuotas,
       monto: primeraCuota.monto_solicitado,
+      saldo_actual: saldoActual,
+      saldo_usuario: saldoActual,
+      valor_a_recargar: valorRecargaReal,
+      valor_recarga: valorRecargaReal,
       fecha_limite: primeraCuota.fecha_limite,
       plan,
-      mensaje: plan === "control"
-        ? `Hola, para cubrir tus facturas del periodo necesitas recargar $${Number(primeraCuota.monto_solicitado).toLocaleString()}. Fecha límite: ${primeraCuota.fecha_limite}.`
-        : `Hola, tu primera cuota es de $${Number(primeraCuota.monto_solicitado).toLocaleString()}. Fecha límite: ${primeraCuota.fecha_limite}. Cuota 1 de 2.`,
+      nombre_usuario: usuario.usuario?.nombre || usuario.usuario?.telefono || 'Usuario',
+      mensaje: mensajeRecarga,
     },
   });
 
@@ -293,7 +292,15 @@ async function verificarRecordatorios(body) {
     if (disponible < faltante) {
       // No tiene saldo suficiente → generar solicitud de recarga (tipo canónico)
       const montoFaltante = faltante - disponible;
-      const saludo = nombreUsuario ? `Hola ${nombreUsuario} 👋🏼\n\n` : '';
+      const saldoActual = Number(disponible || 0);
+      const valorRecargaReal = Number(montoFaltante || 0);
+      const nombreVisible = nombreUsuario || 'Usuario';
+      const mensajeRecarga = generarMensajeSolicitudRecarga({
+        nombre_usuario: nombreVisible,
+        saldo_actual: saldoActual,
+        valor_a_recargar: valorRecargaReal,
+      });
+
       await crearNotificacionInterna({
         usuario_id: usuario.usuario_id,
         tipo: "solicitud_recarga",
@@ -303,10 +310,14 @@ async function verificarRecordatorios(body) {
           numero_cuota: sol.numero_cuota,
           total_cuotas: sol.total_cuotas,
           monto_faltante: montoFaltante,
+          monto: montoFaltante,
           valor_recarga: montoFaltante,
+          valor_a_recargar: valorRecargaReal,
+          saldo_actual: saldoActual,
+          saldo_usuario: saldoActual,
           fecha_limite: sol.fecha_limite,
-          nombre_usuario: nombreUsuario,
-          mensaje: `${saludo}Recuerda que tienes una recarga pendiente de $${Number(montoFaltante).toLocaleString()} antes del ${sol.fecha_limite}. Cuota ${sol.numero_cuota} de ${sol.total_cuotas}.`,
+          nombre_usuario: nombreVisible,
+          mensaje: mensajeRecarga,
         },
       });
 
@@ -431,7 +442,7 @@ function calcularFechaRecordatorioFactura(factura) {
 }
 
 /**
- * Para plan control: la fecha límite es la fecha de vencimiento
+ * Para cuota 1: la fecha límite es la fecha de vencimiento
  * más próxima de todas las facturas.
  * 
  * Para facturas sin fecha_vencimiento, se usa creado_en + 15 días.
@@ -658,7 +669,7 @@ async function recalcularSolicitudesPorObligacion(obligacionId) {
 
   // 6. Calcular nuevas fechas y distribución según el plan
   // IMPORTANTE: Calcular distribución UNA SOLA VEZ antes del loop
-  const plan = obligacion.usuarios?.plan || "control";
+  const plan = obligacion.usuarios?.plan || "tranquilidad";
   const periodo = obligacion.periodo;
 
   let distribucion = null;
@@ -666,30 +677,20 @@ async function recalcularSolicitudesPorObligacion(obligacionId) {
   let nuevaFechaLimiteCuota2, nuevaFechaRecordatorioCuota2;
   let montoCuota1, montoCuota2;
 
-  if (plan === "control") {
-    // Plan control: 1 cuota por el total
-    nuevaFechaLimiteCuota1 = calcularFechaLimiteCuota1(facturas, periodo);
-    nuevaFechaRecordatorioCuota1 = restarDias(nuevaFechaLimiteCuota1, DIAS_ANTICIPACION_RECORDATORIO);
-    montoCuota1 = montoTotal;
-    montoCuota2 = 0;
-  } else {
-    // Planes con 2 cuotas: calcular distribución UNA sola vez
-    distribucion = distribuirFacturasEnCuotas(facturas, periodo);
-    
-    nuevaFechaLimiteCuota1 = distribucion.cuota1.fechaLimite;
-    nuevaFechaRecordatorioCuota1 = distribucion.cuota1.fechaRecordatorio;
-    montoCuota1 = distribucion.cuota1.monto;
-    
-    nuevaFechaLimiteCuota2 = distribucion.cuota2.fechaLimite;
-    nuevaFechaRecordatorioCuota2 = distribucion.cuota2.fechaRecordatorio;
-    montoCuota2 = distribucion.cuota2.monto;
-  }
+  // Todos los planes (tranquilidad/respaldo) tienen 2 cuotas
+  distribucion = distribuirFacturasEnCuotas(facturas, periodo);
+  
+  nuevaFechaLimiteCuota1 = distribucion.cuota1.fechaLimite;
+  nuevaFechaRecordatorioCuota1 = distribucion.cuota1.fechaRecordatorio;
+  montoCuota1 = distribucion.cuota1.monto;
+  
+  nuevaFechaLimiteCuota2 = distribucion.cuota2.fechaLimite;
+  nuevaFechaRecordatorioCuota2 = distribucion.cuota2.fechaRecordatorio;
+  montoCuota2 = distribucion.cuota2.monto;
 
   console.log(`[SOLICITUDES_RECARGA] Distribución calculada: cuota1=${montoCuota1}, cuota2=${montoCuota2}`);
   console.log(`[SOLICITUDES_RECARGA] Fechas - Cuota1: limite=${nuevaFechaLimiteCuota1}, recordatorio=${nuevaFechaRecordatorioCuota1}`);
-  if (plan !== "control") {
-    console.log(`[SOLICITUDES_RECARGA] Fechas - Cuota2: limite=${nuevaFechaLimiteCuota2}, recordatorio=${nuevaFechaRecordatorioCuota2}`);
-  }
+  console.log(`[SOLICITUDES_RECARGA] Fechas - Cuota2: limite=${nuevaFechaLimiteCuota2}, recordatorio=${nuevaFechaRecordatorioCuota2}`);
 
   // 7. Actualizar las solicitudes existentes
   const actualizaciones = [];
@@ -707,7 +708,7 @@ async function recalcularSolicitudesPorObligacion(obligacionId) {
       updateData.monto_solicitado = montoCuota1;
       updateData.fecha_limite = nuevaFechaLimiteCuota1;
       updateData.fecha_recordatorio = nuevaFechaRecordatorioCuota1;
-    } else if (sol.numero_cuota === 2 && plan !== "control") {
+    } else if (sol.numero_cuota === 2) {
       updateData.monto_solicitado = montoCuota2;
       if (distribucion.cuota2.facturas.length > 0) {
         updateData.fecha_limite = nuevaFechaLimiteCuota2;
@@ -1006,7 +1007,7 @@ async function crearOActualizarSolicitud(obligacion, montoPendiente, fechaRecord
       estado: 'pendiente',
       numero_cuota: 1,
       total_cuotas: 1,
-      plan: obligacion.usuarios?.plan || 'control',
+      plan: obligacion.usuarios?.plan || 'tranquilidad',
       fecha_limite: fechaLimite,
       fecha_recordatorio: fechaRecordatorio,
       facturas_ids: (facturasValidadas || []).map(f => f.id),

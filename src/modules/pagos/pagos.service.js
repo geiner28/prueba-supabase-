@@ -12,15 +12,85 @@ const { actualizarContadoresObligacion } = require("../facturas/facturas.service
 const { crearNotificacionInterna, generarMensajePagoObligacion } = require("../notificaciones/notificaciones.service");
 
 function montoSuscripcionPorPlan(plan) {
-  const planNorm = String(plan || "control").toLowerCase();
+  const planNorm = String(plan || "tranquilidad").toLowerCase();
   if (planNorm === "tranquilidad") return 10000;
-  if (planNorm === "respaldo") return 15000;
+  if (planNorm === "respaldo") return 20000;
   return 0;
 }
 
 function planTieneSuscripcion(plan) {
-  const planNorm = String(plan || "control").toLowerCase();
+  const planNorm = String(plan || "tranquilidad").toLowerCase();
   return planNorm === "tranquilidad" || planNorm === "respaldo";
+}
+
+function calcularFechaRecordatorio(fechaVencimiento) {
+  if (!fechaVencimiento) return null;
+
+  const raw = String(fechaVencimiento);
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? new Date(`${raw}T00:00:00`)
+    : new Date(raw);
+
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  parsed.setDate(parsed.getDate() - 5);
+  const y = parsed.getFullYear();
+  const m = String(parsed.getMonth() + 1).padStart(2, "0");
+  const d = String(parsed.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Saldo global heredado entre meses:
+ *   recargas aprobadas - pagos (pagados + en_proceso)
+ * Incluye fallback legacy para facturas "pagada" sin registro en tabla pagos.
+ */
+async function calcularSaldoGlobalDisponible(usuarioId) {
+  const [{ data: recargas }, { data: pagosComprometidos }, { data: facturasPagadas }] = await Promise.all([
+    supabase
+      .from("recargas")
+      .select("monto")
+      .eq("usuario_id", usuarioId)
+      .eq("estado", "aprobada"),
+    supabase
+      .from("pagos")
+      .select("monto_aplicado, factura_id")
+      .eq("usuario_id", usuarioId)
+      .in("estado", ["pagado", "en_proceso"]),
+    supabase
+      .from("facturas")
+      .select("id, monto")
+      .eq("usuario_id", usuarioId)
+      .eq("estado", "pagada"),
+  ]);
+
+  const totalRecargas = (recargas || []).reduce(
+    (sum, r) => sum + Number(r.monto || 0),
+    0
+  );
+
+  const pagosRows = pagosComprometidos || [];
+  const totalPagosRegistrados = pagosRows.reduce(
+    (sum, p) => sum + Number(p.monto_aplicado || 0),
+    0
+  );
+
+  const facturaIdsConPago = new Set(
+    pagosRows.map((p) => p.factura_id).filter(Boolean)
+  );
+
+  const totalPagosLegacy = (facturasPagadas || [])
+    .filter((f) => !facturaIdsConPago.has(f.id))
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+
+  const totalComprometido = totalPagosRegistrados + totalPagosLegacy;
+  const disponible = totalRecargas - totalComprometido;
+
+  return {
+    totalRecargas,
+    totalComprometido,
+    disponible,
+  };
 }
 
 /**
@@ -52,28 +122,13 @@ async function crearPago(body, actorTipo = "sistema", actorId = null) {
     return errors.invalidTransition("La factura ya está pagada.");
   }
 
-  // Calcular disponible GLOBAL (igual al Perfil)
+  // Disponible GLOBAL heredado entre meses.
+  // Se descuenta lo ya pagado y lo reservado en pagos en_proceso.
+  // También cubre datos legacy (facturas pagadas sin fila en pagos).
   // Pero necesitamos periodoNorm para asociar la recarga del mismo período
   const periodoNorm = normalizarPeriodo(factura.periodo);
 
-  const { data: recargas } = await supabase
-    .from("recargas")
-    .select("monto")
-    .eq("usuario_id", usuario.usuario_id)
-    .eq("estado", "aprobada");
-    // ✅ SIN filtro de período - TODAS las recargas aprobadas
-
-  const totalRecargas = (recargas || []).reduce((sum, r) => sum + Number(r.monto), 0);
-
-  // ✅ SOLO pagos confirmados ("pagado"), no incluir "en_proceso"
-  const { data: pagosExistentes } = await supabase
-    .from("pagos")
-    .select("monto_aplicado")
-    .eq("usuario_id", usuario.usuario_id)
-    .eq("estado", "pagado");
-
-  const totalPagos = (pagosExistentes || []).reduce((sum, p) => sum + Number(p.monto_aplicado), 0);
-  const disponible = totalRecargas - totalPagos;
+  const { disponible } = await calcularSaldoGlobalDisponible(usuario.usuario_id);
 
   if (disponible < Number(factura.monto)) {
     return errors.insufficientFunds(
@@ -288,7 +343,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
       .select("plan")
       .eq("id", usuarioId)
       .single();
-    const planUsuario = String(usuarioBase?.plan || "control").toLowerCase();
+    const planUsuario = String(usuarioBase?.plan || "tranquilidad").toLowerCase();
 
     const { data: obligacionesPeriodo, error: oblErr } = await supabase
       .from("obligaciones")
@@ -309,7 +364,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
     const obligacionIds = obligacionesPeriodo.map((o) => o.id);
     const { data: facturasPeriodo, error: facErr } = await supabase
       .from("facturas")
-      .select("id, obligacion_id, servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo, estado, validacion_estado")
+      .select("id, obligacion_id, servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo, estado, validacion_estado, fecha_emision, fecha_vencimiento")
       .in("obligacion_id", obligacionIds)
       .neq("validacion_estado", "rechazada");
 
@@ -414,7 +469,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
 
       const { data: facturasDestino } = await supabase
         .from("facturas")
-        .select("servicio, monto, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo")
+        .select("servicio, monto, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo, fecha_emision, fecha_vencimiento")
         .eq("obligacion_id", siguienteObligacion.id);
 
       const firmaFactura = (f) => [
@@ -425,6 +480,8 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
         f.tipo_referencia || "",
         f.referencia_pago || "",
         f.grupo || "",
+        f.fecha_emision || "",
+        f.fecha_vencimiento || "",
       ].join("|");
 
       const existentes = new Set((facturasDestino || []).map(firmaFactura));
@@ -434,7 +491,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
           const esSuscripcion = String(f.tipo_referencia || "").toLowerCase() === "suscripcion";
 
           if (esSuscripcion && !planTieneSuscripcion(planUsuario)) {
-            // Plan control no debe generar suscripciones en meses siguientes.
+            // Si el plan no soporta suscripción, omitir factura de suscripción.
             continue;
           }
 
@@ -448,11 +505,17 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
 
           const validacionEstado = esSuscripcion ? "validada" : "sin_validar";
 
+          const fechaVencimiento = f.fecha_vencimiento || null;
+          const fechaRecordatorio = calcularFechaRecordatorio(fechaVencimiento);
+
           const candidato = {
             usuario_id: usuarioId,
             obligacion_id: siguienteObligacion.id,
             servicio: f.servicio,
             periodo: nuevoPeriodo,
+            fecha_emision: f.fecha_emision || null,
+            fecha_vencimiento: fechaVencimiento,
+            fecha_recordatorio: fechaRecordatorio,
             monto,
             estado,
             validacion_estado: validacionEstado,

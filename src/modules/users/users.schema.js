@@ -17,7 +17,7 @@ const upsertUserSchema = z.object({
 
 const updatePlanSchema = z.object({
   telefono: z.string().min(7, "Teléfono requerido"),
-  plan: z.enum(["control", "tranquilidad", "respaldo"], "Plan debe ser 'control', 'tranquilidad' o 'respaldo'"),
+  plan: z.enum(["tranquilidad", "respaldo"], "Plan debe ser 'tranquilidad' o 'respaldo'"),
 });
 
 const deleteUserQuerySchema = z.object({

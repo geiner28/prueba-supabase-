@@ -30,7 +30,7 @@ const crearNotificacionMasivaSchema = z.object({
   canal: canalEnum.default("whatsapp"),
   destinatario: destinatarioEnum.default("usuario"),
   payload: z.any().optional(),
-  filtro_plan: z.enum(["control", "tranquilidad", "respaldo"]).optional(),
+  filtro_plan: z.enum(["tranquilidad", "respaldo"]).optional(),
 });
 
 const actualizarEstadoNotificacionSchema = z.object({

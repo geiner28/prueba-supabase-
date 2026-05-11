@@ -21,7 +21,7 @@ function calcularFechaRecordatorioFactura(factura) {
 }
 
 /**
- * Para plan control: la fecha límite es la fecha de vencimiento
+ * Para cuota 1: la fecha límite es la fecha de vencimiento
  * más próxima de todas las facturas.
  * 
  * Para facturas sin fecha_vencimiento, se usa creado_en + 15 días.
