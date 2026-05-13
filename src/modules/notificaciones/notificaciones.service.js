@@ -22,21 +22,33 @@ function tienePlaceholdersMensaje(mensaje) {
 async function calcularSaldoUsuarioReal(usuarioId) {
   if (!usuarioId) return 0;
 
-  const { data: recargas } = await supabase
-    .from("recargas")
-    .select("monto")
-    .eq("usuario_id", usuarioId)
-    .eq("estado", "aprobada");
-
-  const { data: pagos } = await supabase
-    .from("pagos")
-    .select("monto_aplicado")
-    .eq("usuario_id", usuarioId)
-    .eq("estado", "pagado");
+  const [{ data: recargas }, { data: pagos }, { data: facturasPagadas }] = await Promise.all([
+    supabase
+      .from("recargas")
+      .select("monto")
+      .eq("usuario_id", usuarioId)
+      .eq("estado", "aprobada"),
+    supabase
+      .from("pagos")
+      .select("monto_aplicado, factura_id")
+      .eq("usuario_id", usuarioId)
+      .eq("estado", "pagado"),
+    supabase
+      .from("facturas")
+      .select("id, monto")
+      .eq("usuario_id", usuarioId)
+      .eq("estado", "pagada"),
+  ]);
 
   const totalRecargas = (recargas || []).reduce((sum, r) => sum + Number(r.monto || 0), 0);
   const totalPagos = (pagos || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
-  return totalRecargas - totalPagos;
+
+  const facturasConPago = new Set((pagos || []).map((p) => p.factura_id).filter(Boolean));
+  const totalPagosLegacy = (facturasPagadas || [])
+    .filter((f) => !facturasConPago.has(f.id))
+    .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+
+  return totalRecargas - totalPagos - totalPagosLegacy;
 }
 
 async function normalizarPayloadSolicitudRecarga({ usuarioId, payload, forceMensaje = false, nombreFallback = null, saldoCache = null }) {
@@ -299,6 +311,18 @@ async function obtenerPendientesUsuario(telefono) {
 
   const esSolicitudRecarga = (t) => t === "solicitud_recarga" || t === "solicitud_recarga_inicio_mes" || t === "recordatorio_recarga";
   const esPago = (t) => t === "obligacion_cumplida" || t === "pago_confirmado";
+  const esPagoSuscripcion = (n) => {
+    const payload = n?.payload || {};
+    const tipoRef = String(payload?.tipo_referencia || "").toLowerCase();
+    if (tipoRef === "suscripcion") return true;
+
+    const texto = [payload?.etiqueta, payload?.servicio, payload?.mensaje]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return texto.includes("suscrip") || texto.includes("tranquilidad") || texto.includes("respaldo") || texto.includes("control");
+  };
 
   const saldoCache = new Map();
   const solicitudes = [];
@@ -332,9 +356,45 @@ async function obtenerPendientesUsuario(telefono) {
       .eq("id", fix.id);
   }
 
-  const pagos = lista
+  const pagosRaw = lista
     .filter((n) => esPago(n.tipo))
-    .sort((a, b) => new Date(a.creado_en).getTime() - new Date(b.creado_en).getTime());
+    .filter((n) => !esPagoSuscripcion(n));
+
+  const pagos = [];
+  for (const n of pagosRaw) {
+    const payload = n.payload || {};
+    const valor = Number(
+      payload.monto
+        ?? payload.monto_aplicado
+        ?? payload.monto_total
+        ?? payload.monto_pagado
+        ?? 0
+    );
+
+    let saldoActual;
+    if (payload.saldo_actual !== undefined && payload.saldo_actual !== null) {
+      saldoActual = Number(payload.saldo_actual);
+    } else if (saldoCache.has(n.usuario_id)) {
+      saldoActual = Number(saldoCache.get(n.usuario_id));
+    } else {
+      saldoActual = await calcularSaldoUsuarioReal(n.usuario_id);
+      saldoCache.set(n.usuario_id, saldoActual);
+    }
+
+    pagos.push({
+      ...n,
+      payload: {
+        ...payload,
+        monto: valor,
+        monto_aplicado: valor,
+        saldo_actual: saldoActual,
+        saldo_usuario: saldoActual,
+        nuevo_saldo: saldoActual,
+      },
+    });
+  }
+
+  pagos.sort((a, b) => new Date(a.creado_en).getTime() - new Date(b.creado_en).getTime());
 
   const grupos = [];
   for (const p of pagos) {
@@ -366,6 +426,9 @@ async function obtenerPendientesUsuario(telefono) {
       payload: {
         ...(g[0].payload || {}),
         obligaciones,
+        saldo_actual: Number(g?.[0]?.payload?.saldo_actual || 0),
+        saldo_usuario: Number(g?.[0]?.payload?.saldo_usuario || 0),
+        nuevo_saldo: Number(g?.[0]?.payload?.nuevo_saldo || g?.[0]?.payload?.saldo_actual || 0),
       },
     };
   });

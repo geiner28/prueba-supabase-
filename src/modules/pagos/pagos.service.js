@@ -23,6 +23,24 @@ function planTieneSuscripcion(plan) {
   return planNorm === "tranquilidad" || planNorm === "respaldo";
 }
 
+function esSuscripcionFactura(factura, obligacion = null) {
+  const tipoRef = String(factura?.tipo_referencia || "").toLowerCase();
+  if (tipoRef === "suscripcion") return true;
+
+  const texto = [
+    factura?.servicio,
+    factura?.etiqueta,
+    obligacion?.servicio,
+    obligacion?.descripcion,
+    obligacion?.etiqueta,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return texto.includes("suscrip");
+}
+
 function calcularFechaRecordatorio(fechaVencimiento) {
   if (!fechaVencimiento) return null;
 
@@ -38,6 +56,25 @@ function calcularFechaRecordatorio(fechaVencimiento) {
   const m = String(parsed.getMonth() + 1).padStart(2, "0");
   const d = String(parsed.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function ajustarFechaAlPeriodo(fechaOriginal, periodoDestino) {
+  if (!fechaOriginal || !periodoDestino) return null;
+
+  const rawFecha = String(fechaOriginal).slice(0, 10);
+  const matchFecha = rawFecha.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const matchPeriodo = String(periodoDestino).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!matchFecha || !matchPeriodo) return null;
+
+  const diaOriginal = Number(matchFecha[3]);
+  const anioDestino = Number(matchPeriodo[1]);
+  const mesDestino = Number(matchPeriodo[2]);
+
+  // Ajustar al ultimo dia valido del mes destino (ej: 31 -> 30/28).
+  const ultimoDiaMesDestino = new Date(Date.UTC(anioDestino, mesDestino, 0)).getUTCDate();
+  const diaFinal = Math.min(diaOriginal, ultimoDiaMesDestino);
+
+  return `${anioDestino}-${String(mesDestino).padStart(2, "0")}-${String(diaFinal).padStart(2, "0")}`;
 }
 
 /**
@@ -232,45 +269,68 @@ async function confirmarPago(pagoId, body, actorTipo = "admin", actorId = null) 
     if (obligacionEstado === "completada" && obl) {
       nuevasObligacionesIds = await crearSiguienteMesSiCorresponde(obl.usuario_id, obl.periodo);
 
-      // Única notificación permitida hacia el usuario para este flujo:
-      // 'obligacion_cumplida' (campaña bot — "obligación pagada").
-      const { data: usuarioObl } = await supabase
-        .from('usuarios')
-        .select('nombre')
-        .eq('id', pago.usuario_id)
-        .single();
+      const esPagoSuscripcion = esSuscripcionFactura(pago.facturas, obl);
+      if (esPagoSuscripcion) {
+        // Regla de negocio: las suscripciones no deben disparar campañas de pago en bot.
+        // Se mantiene el cierre de obligación y la creación del siguiente mes.
+        await registrarAuditLog({
+          actor_tipo: actorTipo,
+          actor_id: actorId,
+          accion: "omitir_notificacion_suscripcion",
+          entidad: "pagos",
+          entidad_id: pagoId,
+          despues: {
+            pago_id: pagoId,
+            factura_id: pago.factura_id,
+            tipo_referencia: pago.facturas?.tipo_referencia || null,
+            obligacion_id: obligacionId,
+          },
+        });
+      } else {
 
-      // Etiqueta y monto: preferir factura/obligación, caer a defaults.
-      const etiquetaPago =
-        pago.facturas?.etiqueta ||
-        obl.etiqueta ||
-        obl.servicio ||
-        obl.descripcion ||
-        'obligación';
-      const valorPago = Number(obl.monto_pagado || obl.monto_total || pago.monto_aplicado || 0);
+        // Única notificación permitida hacia el usuario para este flujo:
+        // 'obligacion_cumplida' (campaña bot — "obligación pagada").
+        const { data: usuarioObl } = await supabase
+          .from('usuarios')
+          .select('nombre')
+          .eq('id', pago.usuario_id)
+          .single();
 
-      const mensajeCumplida = generarMensajePagoObligacion({
-        nombre: usuarioObl?.nombre || 'Usuario',
-        etiqueta: etiquetaPago,
-        valor: valorPago,
-      });
+        // Etiqueta y monto: preferir factura/obligación, caer a defaults.
+        const etiquetaPago =
+          pago.facturas?.etiqueta ||
+          obl.etiqueta ||
+          obl.servicio ||
+          obl.descripcion ||
+          'obligación';
+        const valorPago = Number(obl.monto_pagado || obl.monto_total || pago.monto_aplicado || 0);
 
-      await crearNotificacionInterna({
-        usuario_id: pago.usuario_id,
-        tipo: "obligacion_cumplida",
-        canal: "whatsapp",
-        destinatario: "usuario",
-        payload: {
-          obligacion_id: obligacionId,
-          servicio: obl.servicio || obl.descripcion || null,
+        const mensajeCumplida = generarMensajePagoObligacion({
+          nombre: usuarioObl?.nombre || 'Usuario',
           etiqueta: etiquetaPago,
-          periodo: obl.periodo,
-          monto_total: Number(obl.monto_total || 0),
-          monto_pagado: Number(obl.monto_pagado || 0),
-          nuevas_obligaciones_ids: nuevasObligacionesIds,
-          mensaje: mensajeCumplida,
-        },
-      });
+          valor: valorPago,
+        });
+
+        await crearNotificacionInterna({
+          usuario_id: pago.usuario_id,
+          tipo: "obligacion_cumplida",
+          canal: "whatsapp",
+          destinatario: "usuario",
+          payload: {
+            obligacion_id: obligacionId,
+            servicio: obl.servicio || obl.descripcion || null,
+            etiqueta: etiquetaPago,
+            tipo_referencia: pago.facturas?.tipo_referencia || null,
+            periodo: obl.periodo,
+            monto: Number(valorPago || 0),
+            monto_aplicado: Number(valorPago || 0),
+            monto_total: Number(obl.monto_total || 0),
+            monto_pagado: Number(obl.monto_pagado || 0),
+            nuevas_obligaciones_ids: nuevasObligacionesIds,
+            mensaje: mensajeCumplida,
+          },
+        });
+      }
     }
   }
 
@@ -505,7 +565,8 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
 
           const validacionEstado = esSuscripcion ? "validada" : "sin_validar";
 
-          const fechaVencimiento = f.fecha_vencimiento || null;
+          const fechaEmision = ajustarFechaAlPeriodo(f.fecha_emision, nuevoPeriodo);
+          const fechaVencimiento = ajustarFechaAlPeriodo(f.fecha_vencimiento, nuevoPeriodo);
           const fechaRecordatorio = calcularFechaRecordatorio(fechaVencimiento);
 
           const candidato = {
@@ -513,7 +574,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
             obligacion_id: siguienteObligacion.id,
             servicio: f.servicio,
             periodo: nuevoPeriodo,
-            fecha_emision: f.fecha_emision || null,
+            fecha_emision: fechaEmision,
             fecha_vencimiento: fechaVencimiento,
             fecha_recordatorio: fechaRecordatorio,
             monto,
@@ -528,8 +589,22 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
             grupo: esSuscripcion ? 1 : (f.grupo || null),
           };
 
+          // Compatibilidad: evita duplicar si en corridas pasadas se clonaron
+          // facturas con fechas del periodo anterior (legacy).
+          const candidatoLegacy = {
+            ...candidato,
+            fecha_emision: f.fecha_emision || null,
+            fecha_vencimiento: f.fecha_vencimiento || null,
+          };
+
           const firmaCandidato = firmaFactura(candidato);
-          if (existentes.has(firmaCandidato) || firmasNuevas.has(firmaCandidato)) {
+          const firmaLegacy = firmaFactura(candidatoLegacy);
+          if (
+            existentes.has(firmaCandidato)
+            || existentes.has(firmaLegacy)
+            || firmasNuevas.has(firmaCandidato)
+            || firmasNuevas.has(firmaLegacy)
+          ) {
             continue;
           }
 

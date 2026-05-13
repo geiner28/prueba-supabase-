@@ -289,6 +289,16 @@ async function suspenderRecordatoriosObligacion(obligacionId, motivo = "obligaci
  */
 async function emitirNotificacionCumplida(obligacion) {
   try {
+    const tipoRef = String(obligacion?.tipo_referencia || "").toLowerCase();
+    const texto = [obligacion?.descripcion, obligacion?.servicio, obligacion?.etiqueta]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    if (tipoRef === "suscripcion" || texto.includes("suscrip")) {
+      return;
+    }
+
     const { crearNotificacionInterna, generarMensajePagoObligacion } = require("../notificaciones/notificaciones.service");
 
     // Obtener nombre del usuario para personalizar el mensaje.
@@ -318,6 +328,8 @@ async function emitirNotificacionCumplida(obligacion) {
         servicio: obligacion.servicio || obligacion.descripcion || null,
         etiqueta: etiquetaPago,
         periodo: obligacion.periodo,
+        monto: Number(valorPago || 0),
+        monto_aplicado: Number(valorPago || 0),
         monto_total: Number(obligacion.monto_total || 0),
         monto_pagado: Number(obligacion.monto_pagado || 0),
         mensaje,

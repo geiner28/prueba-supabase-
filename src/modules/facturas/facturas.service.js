@@ -9,8 +9,25 @@ const { resolverUsuarioPorTelefono } = require("../../utils/resolverUsuario");
 const { normalizarPeriodo } = require("../../utils/periodo");
 const { isValidTransition } = require("../../utils/stateMachine");
 const { registrarAuditLog } = require("../../utils/auditLog");
-const { crearNotificacionInterna, crearNotificacionRecarga, prepararDatosNotificacion, existeNotificacionHoy, crearNotificacionAdminFacturaPorValidar } = require("../notificaciones/notificaciones.service");
+const { crearNotificacionInterna, crearNotificacionRecarga, prepararDatosNotificacion, existeNotificacionHoy, crearNotificacionAdminFacturaPorValidar, generarMensajePagoObligacion } = require("../notificaciones/notificaciones.service");
 const { evaluarObligacion, detectarPrimeraRecargaDelMes } = require("../solicitudes-recarga/solicitudes-recarga.service");
+
+function esSuscripcionFactura(factura, obligacion = null) {
+  const tipoRef = String(factura?.tipo_referencia || "").toLowerCase();
+  if (tipoRef === "suscripcion") return true;
+
+  const texto = [
+    factura?.servicio,
+    factura?.etiqueta,
+    obligacion?.servicio,
+    obligacion?.descripcion,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return texto.includes("suscrip");
+}
 
 async function usuarioPermiteGrupo2(usuarioId) {
   const { data: programacion } = await supabase
@@ -346,8 +363,13 @@ async function rechazarFactura(facturaId, body, adminId) {
 
 /**
  * Listar facturas de una obligación.
+ * @param {string} obligacionId
+ * @param {{ excluirSuscripcion?: boolean }} [opts] Si excluirSuscripcion=true se omiten
+ *        facturas con tipo_referencia="suscripcion" (útil para mensajes del bot que
+ *        confirman las obligaciones registradas, sin mostrar el cobro de la suscripción).
  */
-async function listarFacturasPorObligacion(obligacionId) {
+async function listarFacturasPorObligacion(obligacionId, opts = {}) {
+  const { excluirSuscripcion = false } = opts;
   const { data, error } = await supabase
     .from("facturas")
     .select("*")
@@ -355,8 +377,11 @@ async function listarFacturasPorObligacion(obligacionId) {
     .order("creado_en", { ascending: true });
 
   if (error) throw new Error(`Error listando facturas: ${error.message}`);
+  const filtradas = excluirSuscripcion
+    ? (data || []).filter(f => String(f.tipo_referencia || "").toLowerCase() !== "suscripcion")
+    : (data || []);
   // Mapear para devolver referencia_pago como campo principal
-  const facturas = (data || []).map(f => ({
+  const facturas = filtradas.map(f => ({
     referencia_pago: f.referencia_pago,
     tipo_referencia: f.tipo_referencia,
     servicio: f.servicio,
@@ -519,8 +544,9 @@ async function actualizarMontoFactura(facturaId, body) {
  * - Permite modificar servicio, monto, fechas, etiqueta, grupo, periodo,
  *   referencia_pago, tipo_referencia, archivo_url, observaciones,
  *   estado y validacion_estado.
- * - Si se cambia `estado` a 'pagada' manualmente, recalcula contadores.
- * - No envía notificaciones al usuario.
+ * - Si se cambia `estado` a 'pagada' manualmente, recalcula contadores y,
+ *   cuando la obligación queda completada, crea campaña 'obligacion_cumplida'
+ *   (excepto suscripciones).
  */
 async function actualizarFactura(facturaId, body, actorTipo = "admin", actorId = null) {
   const { data: factura, error: findErr } = await supabase
@@ -598,8 +624,89 @@ async function actualizarFactura(facturaId, body, actorTipo = "admin", actorId =
 
   if (updateErr) throw new Error(`Error actualizando factura: ${updateErr.message}`);
 
+  let obligacionActualizada = null;
+  const cambioAPagada = updates.estado === "pagada" && factura.estado !== "pagada";
+
   if (factura.obligacion_id) {
-    try { await actualizarContadoresObligacion(factura.obligacion_id); } catch (e) { /* noop */ }
+    try {
+      await actualizarContadoresObligacion(factura.obligacion_id);
+      const { data: obl } = await supabase
+        .from("obligaciones")
+        .select("id, usuario_id, estado, periodo, servicio, descripcion, monto_total, monto_pagado")
+        .eq("id", factura.obligacion_id)
+        .single();
+      obligacionActualizada = obl || null;
+    } catch (e) {
+      // noop
+    }
+  }
+
+  if (cambioAPagada && obligacionActualizada?.estado === "completada") {
+    const facturaEvaluada = {
+      ...factura,
+      ...updates,
+      ...updated,
+    };
+
+    if (!esSuscripcionFactura(facturaEvaluada, obligacionActualizada)) {
+      // Evitar duplicados para la misma obligación cuando ya existe campaña previa.
+      const { data: previas } = await supabase
+        .from("notificaciones")
+        .select("id, payload")
+        .eq("usuario_id", factura.usuario_id)
+        .eq("tipo", "obligacion_cumplida")
+        .order("creado_en", { ascending: false })
+        .limit(30);
+
+      const yaExiste = (previas || []).some((n) => String(n?.payload?.obligacion_id || "") === String(factura.obligacion_id));
+
+      if (!yaExiste) {
+        const { data: usuario } = await supabase
+          .from("usuarios")
+          .select("nombre")
+          .eq("id", factura.usuario_id)
+          .single();
+
+        const etiquetaPago =
+          facturaEvaluada.etiqueta ||
+          facturaEvaluada.servicio ||
+          obligacionActualizada.servicio ||
+          obligacionActualizada.descripcion ||
+          "obligación";
+
+        const valorPago = Number(
+          obligacionActualizada.monto_pagado ||
+          obligacionActualizada.monto_total ||
+          facturaEvaluada.monto ||
+          0
+        );
+
+        const mensaje = generarMensajePagoObligacion({
+          nombre: usuario?.nombre || "Usuario",
+          etiqueta: etiquetaPago,
+          valor: valorPago,
+        });
+
+        await crearNotificacionInterna({
+          usuario_id: factura.usuario_id,
+          tipo: "obligacion_cumplida",
+          canal: "whatsapp",
+          destinatario: "usuario",
+          payload: {
+            obligacion_id: factura.obligacion_id,
+            servicio: obligacionActualizada.servicio || obligacionActualizada.descripcion || null,
+            etiqueta: etiquetaPago,
+            tipo_referencia: facturaEvaluada.tipo_referencia || null,
+            periodo: obligacionActualizada.periodo,
+            monto: Number(valorPago || 0),
+            monto_aplicado: Number(valorPago || 0),
+            monto_total: Number(obligacionActualizada.monto_total || 0),
+            monto_pagado: Number(obligacionActualizada.monto_pagado || 0),
+            mensaje,
+          },
+        });
+      }
+    }
   }
 
   await registrarAuditLog({

@@ -30,9 +30,11 @@ router.post("/captura", authBotOrAdmin, validateBody(capturaFacturaSchema), asyn
 });
 
 // GET /api/facturas/obligacion/:obligacionId — Listar facturas de una obligación
+// Query opcional: ?excluir_suscripcion=true para omitir facturas con tipo_referencia="suscripcion"
 router.get("/obligacion/:obligacionId", authBotOrAdmin, async (req, res, next) => {
   try {
-    const result = await service.listarFacturasPorObligacion(req.params.obligacionId);
+    const excluirSuscripcion = String(req.query.excluir_suscripcion || "").toLowerCase() === "true";
+    const result = await service.listarFacturasPorObligacion(req.params.obligacionId, { excluirSuscripcion });
     res.status(result.statusCode).json(result.body);
   } catch (err) {
     next(err);
