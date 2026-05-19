@@ -32,7 +32,7 @@ const upsertUsuarioAdminSchema = z.object({
   direccion: z.string().optional(),
   plan: z.enum(["tranquilidad", "respaldo"]).optional(),
   // Nuevos campos del rediseño 2026-04 (mockup modal "Agregar usuario")
-  tipo_identificacion: z.enum(["CC", "NIT", "CE"]).optional(),
+  tipo_identificacion: z.enum(["CC", "CE"]).optional(),
   numero_identificacion: z.string().max(32).optional(),
   ciudad: z.string().max(80).optional(),
 });
@@ -46,7 +46,7 @@ const updateUsuarioAdminSchema = z.object({
   direccion: z.string().optional().nullable(),
   plan: z.enum(["tranquilidad", "respaldo"]).optional(),
   activo: z.boolean().optional(),
-  tipo_identificacion: z.enum(["CC", "NIT", "CE"]).nullable().optional(),
+  tipo_identificacion: z.enum(["CC", "CE"]).nullable().optional(),
   numero_identificacion: z.string().max(32).nullable().optional(),
   ciudad: z.string().max(80).nullable().optional(),
 });

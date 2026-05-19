@@ -91,4 +91,14 @@ router.delete("/:id", authAdmin, async (req, res, next) => {
   }
 });
 
+// GET /api/facturas/:id — Detalle de una factura por ID (admin) — debe ir al final para no capturar rutas estáticas
+router.get("/:id", authAdmin, async (req, res, next) => {
+  try {
+    const result = await service.getFacturaById(req.params.id);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

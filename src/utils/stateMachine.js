@@ -18,11 +18,10 @@ const transitions = {
     sin_factura: ["pendiente", "aproximada", "pagada"],
     pagada: ["pendiente"], // permitir revertir si fue marcado por error
   },
-  // Flujo interno admin: sin_validar → validada | rechazada (reversible)
+  // Flujo interno admin: sin_revisar → revisada (reversible)
   facturas_validacion: {
-    sin_validar: ["validada", "rechazada"],
-    validada: ["sin_validar", "rechazada"],
-    rechazada: ["sin_validar", "validada"],
+    sin_revisar: ["revisada"],
+    revisada: ["sin_revisar", "revisada"],
   },
   pagos: {
     pendiente: ["en_proceso", "cancelado"],

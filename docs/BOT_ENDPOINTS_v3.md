@@ -1,7 +1,17 @@
 # DeOne Backend — API para Bot WhatsApp
-**Versión 3.1 — 11 de mayo de 2026** ✅ ACTUALIZADA  
+**Versión 3.2 — Notificaciones simplificadas** ✅ ACTUALIZADA  
 **Base URL:** `https://prueba-supabase.onrender.com/api`  
 **Clasificación:** Documento Técnico Confidencial
+
+---
+
+## 📋 Cambios en v3.2
+
+- ✅ **Endpoint único para el bot:** `GET /api/notificaciones/bot/campanias` reemplaza a `/pendientes/:telefono` y `/pendientes-hoy`.
+- ✅ **Mensaje pre-renderizado:** la respuesta entrega `{ telefono, mensaje, ids, tipo, ... }` con el texto ya listo para enviar. El bot no construye nada.
+- ✅ **Solo 3 tipos** de mensaje al usuario: `solicitud_recarga`, `obligacion_cumplida`, `obligaciones_pagadas_grupal` (agrupación automática ≤ 30 min).
+- ✅ **Doble timestamp:** `enviada_en` (sistema, al consumir la cola) + `entregada_en` (bot, vía `POST /bot/entregadas`).
+- ✅ Endpoints legacy se marcan como deprecados (siguen activos por compatibilidad).
 
 ---
 
@@ -72,8 +82,8 @@ Registra o actualiza un usuario por teléfono. Idempotente — se puede llamar e
 | `nombre` | string | No | Nombre del usuario |
 | `apellido` | string | No | Apellido del usuario |
 | `correo` | string | No | Email válido |
-| `tipo_identificacion` | string | No | `"CC"`, `"NIT"` o `"CE"` |
-| `numero_identificacion` | string | No | Número de cédula/NIT (máx 32 caracteres) |
+| `tipo_identificacion` | string | No | `"CC"` o `"CE"` |
+| `numero_identificacion` | string | No | Número de identificación (máx 32 caracteres) |
 | `ciudad` | string | No | Ciudad de residencia (máx 80 caracteres) |
 | `direccion` | string | No | Dirección de residencia (máx 255 caracteres) |
 
@@ -235,7 +245,7 @@ Registra una factura dentro de una obligación. El bot extrae datos (foto, PDF) 
     "servicio": "Internet ETB",
     "monto": 85000,
     "estado": "pendiente",
-    "validacion_estado": "sin_validar",
+    "validacion_estado": "sin_revisar",
     "requiere_revision": false
   },
   "error": null
@@ -248,13 +258,12 @@ Registra una factura dentro de una obligación. El bot extrae datos (foto, PDF) 
 
 | `estado` | `validacion_estado` | Significado |
 |---|---|---|
-| `pendiente` | `sin_validar` | Recién capturada, esperando revisión admin |
-| `pendiente` | `validada` | Admin confirmó los datos. Lista para generar pago |
-| `pendiente` | `rechazada` | Admin rechazó la factura |
-| `pagada` | `validada` | Pago ejecutado |
+| `pendiente` | `sin_revisar` | Recién capturada, esperando revisión admin |
+| `pendiente` | `revisada` | Factura revisada por admin |
+| `pagada` | `revisada` | Pago ejecutado |
 | `anulada` | cualquiera | Cancelada |
 
-> Para crear un pago (EP13), la factura debe tener `validacion_estado = "validada"`.
+> Para crear un pago (EP13), la factura debe tener `validacion_estado = "revisada"` y no tener `motivo_rechazo`.
 
 ---
 
@@ -318,299 +327,223 @@ Calcula saldo en tiempo real: `disponible = total_recargas_aprobadas − total_p
 
 ---
 
-## 6. Notificaciones ⚠️ SECCIÓN ACTUALIZADA v3
+## 6. Notificaciones ⚠️ SECCIÓN ACTUALIZADA v3.2
 
-### ✅ TIPOS VÁLIDOS — Solo 3 tipos llegan al bot
+### ✅ TIPOS VÁLIDOS — Solo 3 mensajes llegan al bot
 
-> ⚠️ **Cambio crítico v3:** Los tipos anteriores (`solicitud_recarga_inicio_mes`, `recordatorio_recarga`, `recarga_confirmada`, `recarga_aprobada`, `recarga_rechazada`, `factura_validada`, `factura_rechazada`, `pago_confirmado`, `obligacion_completada`, `nueva_obligacion`) fueron **eliminados o internalizados**. El bot solo recibirá estos 3:
+> ⚠️ **Cambio crítico v3.2:** El bot **ya no consulta por teléfono**. Existe **un único endpoint global** que entrega la cola de mensajes pendientes para **todos los usuarios**, con el texto del mensaje **ya generado por el sistema**. El bot solo necesita reenviarlo a WhatsApp.
 
 | Tipo | Cuándo se genera |
 |---|---|
-| `solicitud_recarga` | Cron cada 30 min detecta obligaciones activas sin saldo suficiente |
+| `solicitud_recarga` | Cron detecta obligaciones activas sin saldo suficiente |
 | `obligacion_cumplida` | Se completó el pago de UNA factura (sin otros pagos cercanos) |
-| `obligaciones_pagadas_grupal` | Dos o más pagos ocurrieron dentro de una ventana de **30 minutos** |
+| `obligaciones_pagadas_grupal` | Dos o más pagos del mismo usuario en ventana ≤ 30 minutos |
+
+**Doble timestamp por cada notificación:**
+
+| Campo | Quién lo setea | Significado |
+|---|---|---|
+| `creado_en` | Sistema | Cuando se genera la notificación |
+| `enviada_en` | Sistema | Cuando el bot consume la cola (al llamar `/bot/campanias`) |
+| `entregada_en` | Bot | Cuando el mensaje llega al WhatsApp del usuario (vía `/bot/entregadas`) |
 
 ---
 
-### EP10: `GET /api/notificaciones/pendientes/:telefono`
+### EP10: `GET /api/notificaciones/bot/campanias` ✅ ENDPOINT CANÓNICO
 
-**El endpoint central del bot.** Devuelve notificaciones pendientes del usuario y las marca como `"enviada"` automáticamente.
+**El único endpoint que el bot debe consumir para obtener mensajes.**
+
+Devuelve, en una sola llamada, todos los mensajes pendientes para todos los usuarios, **con el texto ya renderizado**. Al servir la respuesta:
+
+- Las notificaciones consumidas pasan a estado `enviada`.
+- Se guarda `enviada_en = NOW()` (timestamp exacto del momento del consumo).
+- Si dos o más pagos del mismo usuario están dentro de ≤ 30 minutos, se devuelven en **una sola campaña grupal**.
 
 ```http
-GET /api/notificaciones/pendientes/573046757626
+GET /api/notificaciones/bot/campanias
 x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
 ```
 
-**Respuesta (200) — Ejemplo con los 3 tipos:**
+**Respuesta (200):**
 ```json
 {
   "ok": true,
-  "data": [
-    {
-      "id": "7a7e4d47-cc2d-4380-bad3-0c5ee297d4b8",
-      "tipo": "solicitud_recarga",
-      "estado": "enviada",
-      "usuarios": {
-        "nombre": "stiven",
-        "apellido": "moscoos",
-        "telefono": "3241563727"
+  "data": {
+    "total": 3,
+    "campanias": [
+      {
+        "ids": ["7a7e4d47-cc2d-4380-bad3-0c5ee297d4b8"],
+        "tipo": "solicitud_recarga",
+        "telefono": "573241563727",
+        "mensaje": "stiven 👋🏼\n\nEs momento de recargar tu cuenta para cubrir tus próximas obligaciones 🙌🏼\n\n• Internet — $ 45.000\n• Luz — $ 30.000\n\nTu saldo actual en deOne es de $ 170.000\n\nValor a recargar: $ 80.000\n\nPuedes hacer la recarga a la llave 0090944088.\n\nCuando la hagas, envíame el comprobante y yo me encargo del resto deOne 👍🏼",
+        "creado_en": "2026-05-11T05:06:04.493Z",
+        "enviada_en": "2026-05-11T05:30:12.001Z"
       },
-      "payload": {
-        "mensaje": "stiven 👋🏼\n\nEs momento de recargar tu cuenta para cubrir tus próximas obligaciones 🙌🏼\n\nTu saldo actual en deOne es de $ 170.000\n\nValor a recargar: $ 80.000\n\nPuedes hacer la recarga a la llave 0090944088.\n\nCuando la hagas, envíame el comprobante y yo me encargo del resto deOne 👍🏼",
-        "saldo_actual": 170000,
-        "saldo_usuario": 170000,
-        "valor_recarga": 80000,
-        "valor_a_recargar": 80000,
-        "nombre_usuario": "stiven",
-        "periodo": "2026-05-01"
+      {
+        "ids": ["08d5eade-64d3-43d7-84cb-bcf5a23000c1"],
+        "tipo": "obligacion_cumplida",
+        "telefono": "573046757626",
+        "mensaje": "¡Carlos! 🙌🏼\nYa hice el pago de Internet por $ 45.000.\n\nTu saldo actualizado en deOne es de $ 25.000\n\nEl comprobante ya quedó cargado en tu enlace habitual.",
+        "creado_en": "2026-05-11T04:10:00.000Z",
+        "enviada_en": "2026-05-11T05:30:12.001Z"
       },
-      "creado_en": "2026-05-11T05:06:04.493Z"
-    },
-    {
-      "id": "105e832a-d3c9-4ddb-848c-0a0a0580a3be",
-      "tipo": "obligacion_cumplida",
-      "estado": "enviada",
-      "payload": {
-        "etiqueta": "Internet",
-        "monto": 45000,
-        "servicio": "Internet"
-      },
-      "creado_en": "2026-05-10T03:58:04.493Z"
-    },
-    {
-      "id": "grp-105e832a-d3c9-4ddb-848c-0a0a0580a3be",
-      "tipo": "obligaciones_pagadas_grupal",
-      "estado": "sin_respuesta",
-      "payload": {
-        "obligaciones": [
-          {
-            "etiqueta": "Luz",
-            "valor": 30000
-          },
-          {
-            "etiqueta": "Agua",
-            "valor": 20000
-          }
-        ]
-      },
-      "creado_en": "2026-05-11T05:06:04.493Z"
-    }
+      {
+        "ids": [
+          "105e832a-d3c9-4ddb-848c-0a0a0580a3be",
+          "9d2b4f7e-2c1a-44c2-94e0-1cfa9b1f0a01"
+        ],
+        "tipo": "obligaciones_pagadas_grupal",
+        "telefono": "573012345678",
+        "mensaje": "¡María! 🙌🏼\n\nYa hice el pago de:\nLuz por $ 30.000.\nAgua por $ 20.000.\n\nTu saldo actualizado en deOne es de $ 15.000\n\n¡Los comprobantes ya quedaron cargados en tu enlace habitual!",
+        "creado_en": "2026-05-11T04:55:00.000Z",
+        "enviada_en": "2026-05-11T05:30:12.001Z"
+      }
+    ]
+  },
+  "error": null
+}
+```
+
+**Contrato del bot:**
+
+| Campo | Tipo | Uso |
+|---|---|---|
+| `telefono` | string | Número al que enviar el mensaje por WhatsApp |
+| `mensaje` | string | Texto ya generado por el sistema — **enviar tal cual** |
+| `ids` | string[] | Ids de notificaciones que componen la campaña (1 individual, N grupal). Devolver en `/bot/entregadas`. |
+| `tipo` | enum | `solicitud_recarga` \| `obligacion_cumplida` \| `obligaciones_pagadas_grupal` |
+| `creado_en` | ISO | Cuando el sistema creó la notificación más antigua de la campaña |
+| `enviada_en` | ISO | Cuando el sistema entregó la campaña al bot |
+
+> Consulta siguiente del bot → devuelve `{ total: 0, campanias: [] }` (idempotente por diseño).
+
+---
+
+### EP10b: `POST /api/notificaciones/bot/entregadas` ✅ NUEVO
+
+**El bot reporta los mensajes que efectivamente llegaron al usuario.** El sistema actualiza el estado a `entregada` y registra `entregada_en` con la hora exacta de entrega.
+
+```http
+POST /api/notificaciones/bot/entregadas
+x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{
+  "ids": [
+    "7a7e4d47-cc2d-4380-bad3-0c5ee297d4b8",
+    "08d5eade-64d3-43d7-84cb-bcf5a23000c1",
+    "105e832a-d3c9-4ddb-848c-0a0a0580a3be",
+    "9d2b4f7e-2c1a-44c2-94e0-1cfa9b1f0a01"
   ],
+  "entregada_en": "2026-05-11T05:30:18.420Z"
+}
+```
+
+| Campo | Tipo | Req | Descripción |
+|---|---|---|---|
+| `ids` | uuid[] | ✅ | Ids individuales (los mismos de `campanias[].ids`). Para una campaña grupal hay que mandar todos. |
+| `entregada_en` | ISO 8601 | No | Hora exacta reportada por el bot. Por defecto `NOW()` del servidor. |
+
+**Respuesta (200):**
+```json
+{
+  "ok": true,
+  "data": {
+    "actualizadas": 4,
+    "entregada_en": "2026-05-11T05:30:18.420Z",
+    "notificaciones": [
+      { "id": "7a7e4d47-...", "estado": "entregada", "entregada_en": "2026-05-11T05:30:18.420Z" }
+    ]
+  },
   "error": null
 }
 ```
 
 ---
 
-### 📦 DETALLE COMPLETO DE PAYLOADS
+### 📝 PLANTILLAS DE MENSAJE (referencia)
 
-#### **Tipo: `solicitud_recarga`**
+Las plantillas son aplicadas por el sistema. El bot **no necesita reconstruirlas**.
 
-**Campos del payload:**
-```javascript
-{
-  "mensaje": string,              // ✅ NORMALIZADO: texto completo sin placeholders, lista para enviar
-  "saldo_actual": number,         // Saldo actual calculado (recargas pagadas - pagos realizados)
-  "saldo_usuario": number,        // Alias del anterior
-  "valor_recarga": number,        // Monto sugerido a recargar
-  "valor_a_recargar": number,     // Alias del anterior
-  "nombre_usuario": string,       // Nombre del usuario
-  "periodo": string               // YYYY-MM (período de la obligación)
-}
+**1) `solicitud_recarga`**
 ```
-
-**✅ Nota importante v3.1:**
-- El campo `mensaje` ya contiene el texto **normalizado sin placeholders** como `(saldo_usuario)` o `(valor_recarga)`
-- Contiene valores reales formateados con `$` y `.000` (ej: `$ 170.000`, `$ 80.000`)
-- El bot puede **copiar directamente el mensaje y enviarlo sin modificaciones**
-
-**Mensaje normalizado (ejemplo real):**
-```
-stiven 👋🏼
+(usuario) 👋🏼
 
 Es momento de recargar tu cuenta para cubrir tus próximas obligaciones 🙌🏼
 
-Tu saldo actual en deOne es de $ 170.000
+• (etiqueta) — $(monto)
+• (etiqueta) — $(monto)
+...
 
-Valor a recargar: $ 80.000
+Tu saldo actual en deOne es de $(saldo_usuario)
+
+Valor a recargar: $(valor_recarga)
 
 Puedes hacer la recarga a la llave 0090944088.
 
 Cuando la hagas, envíame el comprobante y yo me encargo del resto deOne 👍🏼
 ```
 
----
-
-#### **Tipo: `obligacion_cumplida`**
-
-**Campos del payload:**
-```javascript
-{
-  "etiqueta": string,             // Nombre del servicio (ej: "Internet", "Agua", "Luz")
-  "monto": number,                // Monto pagado
-  "servicio": string,             // Alias del anterior
-  "monto_total": number,          // Alias del anterior
-  "monto_aplicado": number        // Alias del anterior
-}
+**2) `obligacion_cumplida`** (1 pago)
 ```
+¡(usuario)! 🙌🏼
+Ya hice el pago de (etiqueta-obligacion) por $(valor_obligacion).
 
-**No incluye mensaje** — El bot debe construirlo:
-```
-¡{nombre_usuario}! 🙌🏼
-Ya hice el pago de {etiqueta} por ${monto}.
-
-Tu saldo actualizado en deOne es de ${nuevo_saldo}
+Tu saldo actualizado en deOne es de $(saldo_user)
 
 El comprobante ya quedó cargado en tu enlace habitual.
 ```
 
----
-
-#### **Tipo: `obligaciones_pagadas_grupal`**
-
-**Campos del payload:**
-```javascript
-{
-  "obligaciones": [                // Array de facturas pagadas en el mismo grupo (≤ 30 min)
-    {
-      "etiqueta": string,          // Nombre del servicio
-      "valor": number              // Monto pagado
-    },
-    ...
-  ]
-}
+**3) `obligaciones_pagadas_grupal`** (≥ 2 pagos en ≤ 30 min)
 ```
-
-**No incluye mensaje** — El bot debe construirlo iterando el array:
-```
-¡{nombre_usuario}! 🙌🏼
+¡(usuario)! 🙌🏼
 
 Ya hice el pago de:
-{etiqueta_1} por ${valor_1}.
-{etiqueta_2} por ${valor_2}.
-{etiqueta_3} por ${valor_3}.
+(etiqueta-obligacion) por $(valor_obligacion).
+(etiqueta-obligacion) por $(valor_obligacion).
+...
 
-Tu saldo actualizado en deOne es de ${nuevo_saldo}
+Tu saldo actualizado en deOne es de $(saldo_user)
 
-Los comprobantes ya quedaron cargados en tu enlace habitual!
-```
-
----
-
-### ✅ AGRUPAMIENTO DE PAGOS (Verificado con test unitario)
-
-**Lógica automática en el servidor:**
-- Cuando el bot consulta `GET /api/notificaciones/pendientes/{telefono}`, el backend busca **todos** los pagos pendientes
-- Los pagos se ordenan por fecha de creación
-- **Pagos dentro de una ventana de ≤ 30 minutos se agrupan automáticamente:**
-  - Si `cantidad_pagos == 1` → retorna como `obligacion_cumplida`
-  - Si `cantidad_pagos >= 2` → retorna como `obligaciones_pagadas_grupal` con `payload.obligaciones[]`
-
-**Ejemplo real (test del 11 mayo):**
-```
-Usuario: stiven (3241563727)
-├─ Pago 1: Internet $45.000 (hace 97 min) → obligacion_cumplida (solo)
-└─ Pago 2+3: Luz $30.000 + Agua $20.000 (hace 28-29 min, diferencia 1 min)
-            → obligaciones_pagadas_grupal (agrupados)
-```
-
-**Resultado del endpoint:**
-```json
-[
-  {
-    "id": "08d5eade-64d3-43d7-84cb-bcf5a23000c1",
-    "tipo": "obligacion_cumplida",
-    "payload": { "etiqueta": "Internet", "monto": 45000 }
-  },
-  {
-    "id": "grp-105e832a-d3c9-4ddb-848c-0a0a0580a3be",
-    "tipo": "obligaciones_pagadas_grupal",
-    "payload": {
-      "obligaciones": [
-        { "etiqueta": "Luz", "valor": 30000 },
-        { "etiqueta": "Agua", "valor": 20000 }
-      ]
-    }
-  }
-]
+¡Los comprobantes ya quedaron cargados en tu enlace habitual!
 ```
 
 ---
 
 ### 🤖 FLUJO RECOMENDADO PARA EL BOT
 
-```javascript
-// Cada 30 minutos, el bot ejecuta:
+```text
+Cada N minutos:
 
-1. GET /api/notificaciones/pendientes/{telefono}
-   → Backend marca automáticamente como "enviada"
+1. GET /api/notificaciones/bot/campanias
+     → Recibe { total, campanias: [{ ids, telefono, mensaje, ... }] }
+     → El sistema ya marcó esos ids como 'enviada' y guardó enviada_en.
 
-2. Para cada notificación en la respuesta:
+2. Por cada campaña:
+     a. enviarWhatsApp(campania.telefono, campania.mensaje)
+     b. Si la entrega fue OK → acumular campania.ids en un buffer
 
-   if (tipo === 'solicitud_recarga') {
-     // ✅ El mensaje ya está normalizado, enviar directamente
-     enviarWhatsApp(telefono, payload.mensaje);
-   }
-   
-   else if (tipo === 'obligacion_cumplida') {
-     // Construir mensaje
-     const msg = `¡${usuario.nombre}! 🙌🏼
-Ya hice el pago de ${payload.etiqueta} por $${formatCurrency(payload.monto)}.
+3. POST /api/notificaciones/bot/entregadas
+     Body: { ids: [...buffer], entregada_en: <ISO de entrega real> }
+     → El sistema marca estado='entregada' y guarda entregada_en.
 
-Tu saldo actualizado en deOne es de ${obtenerSaldoActual()}
-
-El comprobante ya quedó cargado en tu enlace habitual.`;
-     enviarWhatsApp(telefono, msg);
-   }
-   
-   else if (tipo === 'obligaciones_pagadas_grupal') {
-     // Iterar obligaciones
-     const lineas = payload.obligaciones
-       .map(o => `${o.etiqueta} por $${formatCurrency(o.valor)}.`)
-       .join('\n');
-     
-     const msg = `¡${usuario.nombre}! 🙌🏼
-
-Ya hice el pago de:
-${lineas}
-
-Tu saldo actualizado en deOne es de ${obtenerSaldoActual()}
-
-Los comprobantes ya quedaron cargados en tu enlace habitual!`;
-     enviarWhatsApp(telefono, msg);
-   }
-
-3. ❌ NO llamar EP11 (PUT /api/notificaciones/:id)
-   → Ya están marcadas como "enviada" automáticamente
-
-4. Segunda consulta del usuario → devuelve [] (idempotente)
+4. Las que fallen pueden re-marcarse vía PUT /api/notificaciones/:id
+   con estado='fallida' y ultimo_error.
 ```
 
 ---
 
-**Comportamiento del agrupamiento de pagos (anterior v3.0):**
+### ⚠️ Endpoints legacy (compatibilidad)
 
-- Los registros de tipo `obligacion_cumplida` y `pago_confirmado` (legados en DB) se **agrupan automáticamente** en el servidor antes de devolver la respuesta.
-- Si dos o más pagos tienen `creado_en` con diferencia ≤ 30 minutos entre sí → se devuelven como **un solo** registro `obligaciones_pagadas_grupal` con `payload.obligaciones[]`.
-- Si solo hay 1 pago en el grupo → se devuelve como `obligacion_cumplida`.
-- El id del grupal tiene formato `grp-{id_del_primero}`.
+Se mantienen activos pero **no deben usarse en el flujo nuevo del bot**:
 
-**Flujo recomendado para el bot:**
-```
-1. GET /api/notificaciones/pendientes/{telefono}
-   → Las notificaciones se marcan como "enviada" AUTOMÁTICAMENTE
-2. Por cada notificación:
-   a. Si tipo = "solicitud_recarga":
-      → Leer payload.mensaje (texto listo para enviar) O construir desde payload.valor_recarga
-   b. Si tipo = "obligacion_cumplida":
-      → Usar payload.etiqueta y payload.monto_total
-   c. Si tipo = "obligaciones_pagadas_grupal":
-      → Iterar payload.obligaciones[] (array de {etiqueta, valor})
-      → Construir mensaje con la lista de facturas pagadas
-3. NO llamar EP11 ni EP12 después — ya están marcadas
-```
+- `GET /api/notificaciones/pendientes/:telefono` — consulta por usuario (legacy).
+- `GET /api/notificaciones/pendientes-hoy` — variante global previa (legacy).
 
-**Segunda consulta del mismo usuario devuelve `[]`** (idempotente por diseño).
+Prefiera siempre `GET /api/notificaciones/bot/campanias` + `POST /api/notificaciones/bot/entregadas`.
 
 ---
 
@@ -640,48 +573,11 @@ Marca múltiples notificaciones como `"enviada"`. Uso opcional — EP10 ya marca
 
 ---
 
-### EP12a: `GET /api/notificaciones/pendientes-hoy`
+### EP12a: `GET /api/notificaciones/pendientes-hoy` ⚠️ DEPRECADO
 
-Para un **job global diario**. Devuelve todas las notificaciones `solicitud_recarga` creadas HOY en estado `pendiente`, para todos los usuarios. Las marca como `"entregada"` automáticamente.
+Reemplazado por **EP10 (`GET /api/notificaciones/bot/campanias`)**, que ya devuelve mensajes globales para todos los usuarios con texto generado por el sistema.
 
-> ⚠️ **Cambio v3:** Antes filtraba tipo `solicitud_recarga_inicio_mes`. Ahora filtra `solicitud_recarga`.
-
-```http
-GET /api/notificaciones/pendientes-hoy
-x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
-```
-
-**Respuesta (200):**
-```json
-{
-  "ok": true,
-  "data": {
-    "total": 2,
-    "notificaciones": [
-      {
-        "id": "e4c9a1f2-...",
-        "usuario_id": "user-001",
-        "tipo": "solicitud_recarga",
-        "estado": "pendiente",
-        "usuarios": {
-          "nombre": "Laura",
-          "apellido": "Duran",
-          "telefono": "573046757626"
-        },
-        "payload": {
-          "valor_recarga": 215000,
-          "periodo": "2026-05-01",
-          "mensaje": "Hola Laura Duran 👋🏼\n\nEs momento de recargar..."
-        },
-        "creado_en": "2026-05-06T09:00:15.000Z"
-      }
-    ]
-  },
-  "error": null
-}
-```
-
-**Segunda consulta del mismo día devuelve `{ total: 0, notificaciones: [] }`** (idempotente).
+Se mantiene activo solo por compatibilidad. Para detalles consulte EP10.
 
 ---
 
@@ -689,7 +585,7 @@ x-bot-api-key: TK2026A7F9X3M8N2P5Q1R4T6Y8U0I9O3
 
 ### EP13: `POST /api/pagos/crear`
 
-Crea un pago para una factura. Requiere que la factura tenga `validacion_estado = "validada"` (aprobada por admin) y que el usuario tenga saldo suficiente.
+Crea un pago para una factura. Requiere que la factura tenga `validacion_estado = "revisada"`, que no tenga `motivo_rechazo` y que el usuario tenga saldo suficiente.
 
 | Campo | Tipo | Req | Descripción |
 |---|---|---|---|
@@ -724,7 +620,7 @@ Content-Type: application/json
 | Código | Mensaje |
 |---|---|
 | `NOT_FOUND` | Factura no encontrada |
-| `INVALID_STATE_TRANSITION` | No se puede crear pago para factura con `validacion_estado='sin_validar'`. Debe estar `'validada'` por el admin. |
+| `INVALID_STATE_TRANSITION` | No se puede crear pago para factura con `validacion_estado='sin_revisar'` o con `motivo_rechazo`. Debe estar `'revisada'` y aprobada por el admin. |
 | `INSUFFICIENT_FUNDS` | Fondos insuficientes. Disponible: $X, Requerido: $Y |
 
 ---
@@ -733,7 +629,7 @@ Content-Type: application/json
 
 ### EP14: `POST /api/solicitudes-recarga/generar`
 
-Genera solicitudes de recarga según el plan. Requiere que la obligación tenga facturas en estado `validada` o `extraida`.
+Genera solicitudes de recarga según el plan. Requiere que la obligación tenga facturas en estado `revisada` o `extraida`.
 
 **Body:** `{ "telefono": "...", "obligacion_id": "..." }`
 
@@ -872,7 +768,7 @@ Cron cada 6 horas (0 */6 * * *):
 
 ```
 10. Verificar saldo               → GET /api/disponible
-11. Crear pago por factura        → POST /api/pagos/crear  (solo si validacion_estado="validada")
+11. Crear pago por factura        → POST /api/pagos/crear  (solo si validacion_estado="revisada")
 12. Consultar estado              → GET /api/obligaciones, /facturas, /solicitudes-recarga
 13. Bot recibe notif de pago      → GET /api/notificaciones/pendientes/:tel
     → obligacion_cumplida (1 factura) o obligaciones_pagadas_grupal (varias en <30 min)
@@ -985,8 +881,9 @@ Los comprobantes ya quedaron cargados en tu enlace habitual!
 
 ```
 Facturas:
-  pendiente (sin_validar) → pendiente (validada) → pagada
-                          → pendiente (rechazada) → anulada
+  pendiente (sin_revisar) → pendiente (revisada)
+  pendiente (revisada + motivo_rechazo) → anulada
+  pendiente (revisada sin motivo_rechazo) → pagada
 
 Recargas:
   en_validacion → aprobada | rechazada

@@ -131,14 +131,13 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
     console.error("[USERS] Error creando ajustes_usuario:", ajustesErr.message);
   }
 
-  // 4. Crear programación de recargas por defecto según el plan
+  // 4. Crear programación de recargas por defecto: grupo 1 (día 1)
   const plan = newUser.plan || "tranquilidad";
-  const esPlanDoble = plan === "tranquilidad" || plan === "respaldo";
   const programacionData = {
     usuario_id: newUser.id,
-    cantidad_recargas: esPlanDoble ? 2 : 1,
+    cantidad_recargas: 1,
     dia_1: 1,
-    dia_2: esPlanDoble ? 15 : null,
+    dia_2: null,
   };
 
   const { error: progErr } = await supabase
@@ -164,7 +163,7 @@ async function upsertUser({ telefono, nombre, apellido, correo, tipo_identificac
 /**
  * Crear "Obligación 0" — la suscripción DeOne del usuario:
  * - Una obligación con tipo_referencia='suscripcion' (receptor='DeOne', grupo=1, monto=0)
- * - Una factura asociada (también monto 0, sin_validar / pendiente)
+ * - Una factura asociada (también monto 0, sin_revisar / pendiente)
  *
  * Se invoca al crear el usuario Y cuando cambia de plan (para próximo mes).
  * El parámetro periodoForzado se usa cuando cambia de plan (para generar suscripción del próximo mes).
@@ -257,7 +256,7 @@ async function crearSuscripcionInicial(usuarioId, plan, creadoEn = null, periodo
       periodo,
       monto: montoSuscripcion,
       estado: facturaEstado,
-      validacion_estado: "validada",
+      validacion_estado: "revisada",
       validada_en: new Date().toISOString(),
       origen: "auto",
       tipo_referencia: "suscripcion",

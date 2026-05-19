@@ -386,9 +386,9 @@ async function verificarCompletarObligacion(obligacionId) {
 
 /**
  * Eliminar obligación (hard delete).
- * - Bloqueado si hay facturas en estado 'pagada' o 'validada' (riesgo financiero/legal).
+ * - Bloqueado si hay facturas en estado 'pagada' o revisadas sin rechazo (riesgo financiero/legal).
  * - Por default también bloqueado si hay facturas asociadas.
- * - Con force=true: elimina facturas no pagadas/validadas en cascada y luego la obligación.
+ * - Con force=true: elimina facturas no pagadas/revisadas en cascada y luego la obligación.
  *   Solicitudes_recarga se eliminan por CASCADE.
  *   Facturas tienen FK ON DELETE RESTRICT, por eso se borran manualmente.
  */
@@ -402,16 +402,16 @@ async function eliminarObligacion(obligacionId, { force = false, actor = "admin"
 
   const { data: facturas, error: facErr } = await supabase
     .from("facturas")
-    .select("id, estado, validacion_estado")
+    .select("id, estado, validacion_estado, motivo_rechazo")
     .eq("obligacion_id", obligacionId);
   if (facErr) throw new Error(`Error consultando facturas: ${facErr.message}`);
 
   const protegidas = (facturas || []).filter(
-    (f) => f.estado === "pagada" || f.validacion_estado === "validada"
+    (f) => f.estado === "pagada" || (f.validacion_estado === "revisada" && !f.motivo_rechazo)
   );
   if (protegidas.length > 0) {
     return errors.invalidTransition(
-      `No se puede eliminar: la obligación tiene ${protegidas.length} factura(s) pagada(s)/validada(s). Esta acción está bloqueada por integridad financiera.`
+      `No se puede eliminar: la obligación tiene ${protegidas.length} factura(s) pagada(s)/revisada(s). Esta acción está bloqueada por integridad financiera.`
     );
   }
 

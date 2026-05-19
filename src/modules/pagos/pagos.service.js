@@ -131,7 +131,7 @@ async function calcularSaldoGlobalDisponible(usuarioId) {
 }
 
 /**
- * Crear pago para una factura validada.
+ * Crear pago para una factura revisada.
  */
 async function crearPago(body, actorTipo = "sistema", actorId = null) {
   const { telefono, factura_id } = body;
@@ -150,9 +150,9 @@ async function crearPago(body, actorTipo = "sistema", actorId = null) {
     return errors.notFound("Factura no encontrada o no pertenece al usuario");
   }
 
-  if (factura.validacion_estado !== "validada") {
+  if (factura.validacion_estado !== "revisada" || factura.motivo_rechazo) {
     return errors.invalidTransition(
-      `No se puede crear pago para factura con validacion_estado='${factura.validacion_estado}'. Debe estar 'validada' por el admin.`
+      `No se puede crear pago para factura con validacion_estado='${factura.validacion_estado}'. Debe estar 'revisada' y sin rechazo por el admin.`
     );
   }
   if (factura.estado === "pagada") {
@@ -426,7 +426,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
       .from("facturas")
       .select("id, obligacion_id, servicio, monto, origen, etiqueta, archivo_url, tipo_referencia, referencia_pago, grupo, estado, validacion_estado, fecha_emision, fecha_vencimiento")
       .in("obligacion_id", obligacionIds)
-      .neq("validacion_estado", "rechazada");
+      .is("motivo_rechazo", null);
 
     if (facErr) {
       console.error("[PAGOS] Error consultando facturas del periodo:", facErr.message);
@@ -563,7 +563,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
             ? (monto === 0 ? "pagada" : "pendiente")
             : "pendiente";
 
-          const validacionEstado = esSuscripcion ? "validada" : "sin_validar";
+          const validacionEstado = esSuscripcion ? "revisada" : "sin_revisar";
 
           const fechaEmision = ajustarFechaAlPeriodo(f.fecha_emision, nuevoPeriodo);
           const fechaVencimiento = ajustarFechaAlPeriodo(f.fecha_vencimiento, nuevoPeriodo);
@@ -627,7 +627,7 @@ async function crearSiguienteMesSiCorresponde(usuarioId, periodoActual, opciones
         .from("facturas")
         .select("monto, estado")
         .eq("obligacion_id", siguienteObligacion.id)
-        .neq("validacion_estado", "rechazada");
+        .is("motivo_rechazo", null);
 
       const totalFacturas = (facturasDestinoFinal || []).length;
       const facturasPagadas = (facturasDestinoFinal || []).filter((f) => f.estado === "pagada").length;

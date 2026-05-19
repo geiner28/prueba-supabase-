@@ -356,9 +356,14 @@ async function obtenerPendientesUsuario(telefono) {
       .eq("id", fix.id);
   }
 
+  // Solo procesar pagos con al menos 30 min de antigüedad para acumular
+  // todos los pagos del mismo lapso antes de decidir si agrupar o no.
+  const VENTANA_ESPERA_MS = 30 * 60 * 1000;
+  const _ahora = Date.now();
   const pagosRaw = lista
     .filter((n) => esPago(n.tipo))
-    .filter((n) => !esPagoSuscripcion(n));
+    .filter((n) => !esPagoSuscripcion(n))
+    .filter((n) => (_ahora - new Date(n.creado_en).getTime()) >= VENTANA_ESPERA_MS);
 
   const pagos = [];
   for (const n of pagosRaw) {
@@ -438,8 +443,7 @@ async function obtenerPendientesUsuario(telefono) {
 
 /**
  * Obtener notificaciones pendientes de HOY para TODOS los usuarios (uso bot global).
- * CHATBOT PASIVO GLOBAL: Al consultar, cambia automáticamente el estado a 'enviada'
- * para evitar duplicados cuando múltiples workers/procesos consumen cola.
+ * Lectura pura: solo devuelve las notificaciones en estado 'pendiente' sin mutarlas.
  */
 async function obtenerPendientesHoyGlobal() {
   const ahora = new Date();
@@ -449,7 +453,7 @@ async function obtenerPendientesHoyGlobal() {
   const { data: pendientes, error: queryError } = await supabase
     .from("notificaciones")
     .select("*, usuarios(nombre, apellido, telefono)")
-    .in("estado", ["pendiente", "entregada"])
+    .eq("estado", "pendiente")
     .in("tipo", ["solicitud_recarga"])
     .gte("creado_en", inicioDia)
     .lte("creado_en", finDia)
@@ -480,24 +484,6 @@ async function obtenerPendientesHoyGlobal() {
         .from("notificaciones")
         .update({ payload: n.payload, tipo: "solicitud_recarga" })
         .eq("id", n.id);
-    }
-  }
-
-  if (pendientes && pendientes.length > 0) {
-    const idsActualizar = pendientes.map((notificacion) => notificacion.id);
-
-    const { error: updateError } = await supabase
-      .from("notificaciones")
-      .update({
-        estado: "entregada",
-        ultimo_error: null,
-      })
-      .in("id", idsActualizar);
-
-    if (updateError) {
-      console.error("[NOTIFICACIONES] Error cambiando estado a entregada (global):", updateError.message);
-    } else {
-      console.log(`[NOTIFICACIONES] ${idsActualizar.length} notificaciones de hoy marcadas como entregadas (global)`);
     }
   }
 
@@ -604,13 +590,19 @@ async function existeNotificacionHoy(usuarioId, tipo) {
  * Uno de los 3 únicos mensajes que el bot envía al usuario.
  */
 function generarMensajeSolicitudRecarga(datos) {
-  const { nombre_usuario, saldo_actual, valor_a_recargar } = datos;
+  const { nombre_usuario, saldo_actual, valor_a_recargar, obligaciones } = datos;
   const fmt = (v) => `$ ${Number(v || 0).toLocaleString('es-CO')}`;
+
+  const listaObligaciones = Array.isArray(obligaciones) && obligaciones.length > 0
+    ? '\n' + obligaciones
+        .map(o => `• ${o.etiqueta || o.servicio || 'Obligación'} — ${fmt(o.monto || o.valor || 0)}`)
+        .join('\n') + '\n'
+    : '';
 
   return `${nombre_usuario} 👋🏼
 
 Es momento de recargar tu cuenta para cubrir tus próximas obligaciones 🙌🏼
-
+${listaObligaciones}
 Tu saldo actual en deOne es de ${fmt(saldo_actual)}
 
 Valor a recargar: ${fmt(valor_a_recargar)}
@@ -639,17 +631,43 @@ Te aviso cuando pague tus obligaciones.`;
 }
 
 /**
- * Genera mensaje de PAGO DE OBLIGACIÓN.
+ * Genera mensaje de PAGO DE OBLIGACIÓN (individual).
  * Uno de los 3 únicos mensajes que el bot envía al usuario.
  */
 function generarMensajePagoObligacion(datos) {
-  const { nombre, etiqueta, valor } = datos;
+  const { nombre, etiqueta, valor, saldo } = datos;
   const fmt = (v) => `$ ${Number(v || 0).toLocaleString('es-CO')}`;
 
   return `¡${nombre}! 🙌🏼
-Ya hice el pago de @${etiqueta} por ${fmt(valor)}.
+Ya hice el pago de ${etiqueta} por ${fmt(valor)}.
+
+Tu saldo actualizado en deOne es de ${fmt(saldo)}
 
 El comprobante ya quedó cargado en tu enlace habitual.`;
+}
+
+/**
+ * Genera mensaje de PAGO DE VARIAS OBLIGACIONES (grupal).
+ * Uno de los 3 únicos mensajes que el bot envía al usuario.
+ *
+ * datos = { nombre, obligaciones: [{ etiqueta, valor }, ...], saldo }
+ */
+function generarMensajeObligacionesGrupal(datos) {
+  const { nombre, obligaciones = [], saldo } = datos;
+  const fmt = (v) => `$ ${Number(v || 0).toLocaleString('es-CO')}`;
+
+  const lineas = obligaciones
+    .map(o => `${o.etiqueta || o.servicio || 'Obligación'} por ${fmt(o.valor || o.monto || 0)}.`)
+    .join('\n');
+
+  return `¡${nombre}! 🙌🏼
+
+Ya hice el pago de:
+${lineas}
+
+Tu saldo actualizado en deOne es de ${fmt(saldo)}
+
+¡Los comprobantes ya quedaron cargados en tu enlace habitual!`;
 }
 
 /**
@@ -689,7 +707,8 @@ async function prepararDatosNotificacion(usuarioId, periodo, esPrimeraRecarga) {
     .from('facturas')
     .select('id, servicio, etiqueta, monto, estado, validacion_estado')
     .in('obligacion_id', obligacionIds)
-    .eq('validacion_estado', 'validada')
+    .eq('validacion_estado', 'revisada')
+    .is('motivo_rechazo', null)
     .order('etiqueta', { ascending: true });
   
   if (!facturasDelMes || facturasDelMes.length === 0) {
@@ -857,7 +876,7 @@ async function crearAlertaAdmin(datos) {
 // Identificación implícita: usuario_id=null + canal='sistema'.
 
 /**
- * Notificación admin: una factura recién creada quedó en sin_validar
+ * Notificación admin: una factura recién creada quedó en sin_revisar
  * y necesita revisión interna del admin (validar/rechazar/aproximar).
  */
 async function crearNotificacionAdminFacturaPorValidar({ factura, usuario }) {
@@ -882,7 +901,16 @@ async function crearNotificacionAdminFacturaPorValidar({ factura, usuario }) {
         numero_ref: numeroRef,
         periodo: factura.periodo,
         monto: factura.monto,
-        validacion_estado: factura.validacion_estado || "sin_validar",
+        validacion_estado: factura.validacion_estado || "sin_revisar",
+        fecha_emision: factura.fecha_emision || null,
+        fecha_vencimiento: factura.fecha_vencimiento || null,
+        fecha_recordatorio: factura.fecha_recordatorio || null,
+        referencia_pago: factura.referencia_pago || null,
+        tipo_referencia: factura.tipo_referencia || null,
+        pagina_pago: factura.pagina_pago || factura.archivo_url || null,
+        archivo_url: factura.archivo_url || null,
+        grupo: factura.grupo || null,
+        motivo_rechazo: factura.motivo_rechazo || null,
         creada_en: new Date().toISOString(),
       },
       estado: "sin_revisar",
@@ -1084,6 +1112,241 @@ async function eliminarNotificacionesBatch(ids) {
   return success({ eliminadas: ids.length });
 }
 
+// ============================================================
+// FLUJO NUEVO BOT — Campañas globales (3 tipos únicos)
+// ============================================================
+//
+// El bot consume UN solo endpoint que devuelve, para TODOS los
+// usuarios, los mensajes pendientes ya renderizados como texto.
+// El JSON se mantiene minimalista: { telefono, mensaje } más
+// metadatos que el bot necesita para reportar la entrega.
+//
+// Tipos soportados (únicos 3 mensajes que el bot envía):
+//   1) solicitud_recarga          → pedir recarga al usuario
+//   2) obligacion_cumplida        → confirmación de 1 pago
+//   3) obligaciones_pagadas_grupal → confirmación de varios pagos
+//
+// Reglas:
+//   • Los pagos confirmados (obligacion_cumplida / pago_confirmado)
+//     que ocurren en una ventana ≤30 minutos por usuario se
+//     agrupan automáticamente en un único mensaje grupal.
+//   • Al servir la campaña, el estado pasa a 'enviada' y se
+//     setea enviada_en = NOW(). Esto evita reenvíos por reinicio
+//     del bot.
+//   • El bot reporta la entrega real vía POST /bot/entregadas con
+//     la lista de ids; el sistema setea estado='entregada' y
+//     entregada_en = NOW().
+// ============================================================
+
+async function _obtenerNombreUsuario(usuarioId, fallback) {
+  if (fallback) return fallback;
+  const { data } = await supabase
+    .from("usuarios")
+    .select("nombre, telefono")
+    .eq("id", usuarioId)
+    .single();
+  return data?.nombre || data?.telefono || "Usuario";
+}
+
+/**
+ * Construye la cola global de mensajes pendientes para el bot.
+ * Renderiza el texto final y marca como 'enviada' las notificaciones
+ * individuales que componen cada campaña.
+ *
+ * Respuesta: { total, campanias: [{ telefono, mensaje, tipo, ids[], creado_en, enviada_en }] }
+ */
+async function obtenerCampaniasBot() {
+  const TIPOS_RECARGA = ["solicitud_recarga", "solicitud_recarga_inicio_mes", "recordatorio_recarga"];
+  const TIPOS_PAGO = ["obligacion_cumplida", "pago_confirmado"];
+
+  const { data: pendientes, error } = await supabase
+    .from("notificaciones")
+    .select("*, usuarios(nombre, apellido, telefono)")
+    .eq("estado", "pendiente")
+    .in("tipo", [...TIPOS_RECARGA, ...TIPOS_PAGO])
+    .order("creado_en", { ascending: true });
+
+  if (error) throw new Error(`Error buscando notificaciones pendientes: ${error.message}`);
+
+  const lista = pendientes || [];
+  if (lista.length === 0) {
+    return success({ total: 0, campanias: [] });
+  }
+
+  const saldoCache = new Map();
+  const campanias = [];
+  const idsConsumidos = [];
+
+  // --- 1) Solicitudes de recarga: 1 mensaje por notificación ---
+  for (const n of lista.filter(x => TIPOS_RECARGA.includes(x.tipo))) {
+    const telefono = n?.usuarios?.telefono;
+    if (!telefono) continue;
+
+    const nombre = await _obtenerNombreUsuario(n.usuario_id, n?.usuarios?.nombre);
+    const payload = n.payload || {};
+
+    let saldoActual;
+    if (payload.saldo_actual != null) saldoActual = Number(payload.saldo_actual);
+    else if (saldoCache.has(n.usuario_id)) saldoActual = saldoCache.get(n.usuario_id);
+    else {
+      saldoActual = await calcularSaldoUsuarioReal(n.usuario_id);
+      saldoCache.set(n.usuario_id, saldoActual);
+    }
+
+    const valorRecarga = Number(
+      payload.valor_a_recargar
+      ?? payload.valor_recarga
+      ?? payload.monto_faltante
+      ?? payload.monto
+      ?? 0
+    );
+
+    const mensaje = generarMensajeSolicitudRecarga({
+      nombre_usuario: nombre,
+      saldo_actual: saldoActual,
+      valor_a_recargar: valorRecarga,
+      obligaciones: payload.obligaciones || [],
+    });
+
+    campanias.push({
+      ids: [n.id],
+      tipo: "solicitud_recarga",
+      telefono,
+      mensaje,
+      creado_en: n.creado_en,
+    });
+    idsConsumidos.push(n.id);
+  }
+
+  // --- 2) Pagos: agrupar por usuario en ventanas ≤30 min ---
+  // Solo se procesan pagos con al menos 30 min de antigüedad, para garantizar
+  // que todos los pagos del mismo lapso estén disponibles antes de agrupar.
+  const VENTANA_ESPERA_MS = 30 * 60 * 1000;
+  const ahora = Date.now();
+  const pagos = lista.filter(x =>
+    TIPOS_PAGO.includes(x.tipo) &&
+    x?.usuarios?.telefono &&
+    (ahora - new Date(x.creado_en).getTime()) >= VENTANA_ESPERA_MS
+  );
+  const porUsuario = new Map();
+  for (const p of pagos) {
+    const key = p.usuario_id;
+    if (!porUsuario.has(key)) porUsuario.set(key, []);
+    porUsuario.get(key).push(p);
+  }
+
+  for (const [usuarioId, items] of porUsuario.entries()) {
+    items.sort((a, b) => new Date(a.creado_en).getTime() - new Date(b.creado_en).getTime());
+
+    const grupos = [];
+    for (const it of items) {
+      if (grupos.length === 0) { grupos.push([it]); continue; }
+      const g = grupos[grupos.length - 1];
+      const diff = Math.abs(new Date(it.creado_en).getTime() - new Date(g[0].creado_en).getTime());
+      if (diff <= 30 * 60 * 1000) g.push(it);
+      else grupos.push([it]);
+    }
+
+    for (const grupo of grupos) {
+      const head = grupo[0];
+      const telefono = head?.usuarios?.telefono;
+      if (!telefono) continue;
+
+      const nombre = await _obtenerNombreUsuario(usuarioId, head?.usuarios?.nombre);
+
+      let saldoActual;
+      if (saldoCache.has(usuarioId)) saldoActual = saldoCache.get(usuarioId);
+      else {
+        saldoActual = await calcularSaldoUsuarioReal(usuarioId);
+        saldoCache.set(usuarioId, saldoActual);
+      }
+
+      const obligaciones = grupo.map(g => {
+        const p = g.payload || {};
+        return {
+          etiqueta: p.etiqueta || p.servicio || "obligación",
+          valor: Number(p.monto ?? p.monto_aplicado ?? p.monto_total ?? p.monto_pagado ?? 0),
+        };
+      });
+
+      let mensaje;
+      let tipo;
+      if (grupo.length === 1) {
+        tipo = "obligacion_cumplida";
+        mensaje = generarMensajePagoObligacion({
+          nombre,
+          etiqueta: obligaciones[0].etiqueta,
+          valor: obligaciones[0].valor,
+          saldo: saldoActual,
+        });
+      } else {
+        tipo = "obligaciones_pagadas_grupal";
+        mensaje = generarMensajeObligacionesGrupal({
+          nombre,
+          obligaciones,
+          saldo: saldoActual,
+        });
+      }
+
+      campanias.push({
+        ids: grupo.map(g => g.id),
+        tipo,
+        telefono,
+        mensaje,
+        creado_en: head.creado_en,
+      });
+      idsConsumidos.push(...grupo.map(g => g.id));
+    }
+  }
+
+  // --- 3) Marcar como enviada + enviada_en = NOW() (atómico) ---
+  const enviadaEn = new Date().toISOString();
+  if (idsConsumidos.length > 0) {
+    const { error: updErr } = await supabase
+      .from("notificaciones")
+      .update({ estado: "enviada", enviada_en: enviadaEn, ultimo_error: null })
+      .in("id", idsConsumidos);
+    if (updErr) {
+      console.error("[NOTIFICACIONES] Error marcando enviadas:", updErr.message);
+    }
+  }
+
+  // Anotar enviada_en en la respuesta (para que el bot lo vea)
+  for (const c of campanias) c.enviada_en = enviadaEn;
+
+  return success({ total: campanias.length, campanias });
+}
+
+/**
+ * Marca un conjunto de notificaciones como 'entregada' y registra
+ * la hora exacta reportada por el bot (o NOW() por defecto).
+ *
+ * body: { ids: [uuid, ...], entregada_en?: ISO }
+ */
+async function marcarEntregadas(ids, entregadaEnInput) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return errors.badRequest("Se requiere un array de ids");
+  }
+
+  const entregadaEn = entregadaEnInput
+    ? new Date(entregadaEnInput).toISOString()
+    : new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("notificaciones")
+    .update({ estado: "entregada", entregada_en: entregadaEn })
+    .in("id", ids)
+    .select("id, entregada_en, estado");
+
+  if (error) throw new Error(`Error marcando entregadas: ${error.message}`);
+
+  return success({
+    actualizadas: (data || []).length,
+    entregada_en: entregadaEn,
+    notificaciones: data || [],
+  });
+}
+
 module.exports = {
   crearNotificacion,
   crearNotificacionInterna,
@@ -1091,6 +1354,8 @@ module.exports = {
   listarNotificaciones,
   obtenerPendientesUsuario,
   obtenerPendientesHoyGlobal,
+  obtenerCampaniasBot,
+  marcarEntregadas,
   actualizarEstadoNotificacion,
   marcarEnviadasBatch,
   eliminarNotificacion,
@@ -1102,6 +1367,7 @@ module.exports = {
   generarMensajeConfirmada,
   generarMensajeSolicitudRecarga,
   generarMensajePagoObligacion,
+  generarMensajeObligacionesGrupal,
   prepararDatosNotificacion,
   existeNotificacionHoy,
   // Funciones de alertas admin

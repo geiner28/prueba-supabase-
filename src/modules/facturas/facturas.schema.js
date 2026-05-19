@@ -3,14 +3,14 @@
 //
 // Modelo de estados:
 //   estado (visible al usuario)        → pendiente | pagada | sin_factura | aproximada
-//   validacion_estado (interno admin)  → sin_validar | validada | rechazada
+//   validacion_estado (interno admin)  → sin_revisar | revisada
 //
 // Factura = servicio individual dentro de una obligación.
 // ===========================================
 const { z } = require("zod");
 
 const ESTADO_FACTURA = ["pendiente", "pagada", "sin_factura", "aproximada"];
-const VALIDACION_ESTADO = ["sin_validar", "validada", "rechazada"];
+const VALIDACION_ESTADO = ["sin_revisar", "revisada"];
 
 // Capturar factura — el bot o admin registra un servicio
 const capturaFacturaSchema = z.object({
@@ -34,7 +34,7 @@ const capturaFacturaSchema = z.object({
   extraccion_confianza: z.number().min(0).max(1).nullable().optional(),
 });
 
-// Validar factura (admin marca validacion_estado='validada' y opcionalmente edita campos).
+// Validar factura (admin marca validacion_estado='revisada' y opcionalmente edita campos).
 // Todos los campos son OPCIONALES: el admin puede solo validar sin tocar nada,
 // o validar y editar campos al mismo tiempo. NO se envía mensaje al usuario.
 const validarFacturaSchema = z.object({
@@ -53,7 +53,7 @@ const validarFacturaSchema = z.object({
   grupo: z.coerce.number().int().min(1).max(2).nullable().optional(),
 });
 
-// Rechazar factura (admin marca validacion_estado='rechazada')
+// Rechazar factura (admin marca validacion_estado='revisada' y registra motivo)
 const rechazarFacturaSchema = z.object({
   motivo_rechazo: z.string().min(1, "Motivo de rechazo requerido"),
 });

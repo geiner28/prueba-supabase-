@@ -13,11 +13,35 @@ const DIAS_SIN_VENCIMIENTO = 15;
  * Si NO tiene fecha_vencimiento → creado_en + 15 días
  */
 function calcularFechaRecordatorioFactura(factura) {
-  if (factura.fecha_vencimiento) {
+  if (esFechaValida(factura.fecha_vencimiento)) {
     return restarDias(factura.fecha_vencimiento, DIAS_ANTICIPACION_RECORDATORIO);
-  } else {
+  } else if (esFechaValida(factura.creado_en)) {
     return sumarDias(factura.creado_en, DIAS_SIN_VENCIMIENTO);
   }
+
+  return formatFecha(new Date());
+}
+
+function esFechaValida(fechaStr) {
+  if (!fechaStr) return false;
+  const fecha = new Date(fechaStr);
+  return !Number.isNaN(fecha.getTime());
+}
+
+function obtenerFechaEfectivaFactura(factura, periodo) {
+  if (esFechaValida(factura.fecha_vencimiento)) {
+    return factura.fecha_vencimiento;
+  }
+
+  if (esFechaValida(factura.fecha_recordatorio)) {
+    return factura.fecha_recordatorio;
+  }
+
+  if (esFechaValida(factura.creado_en)) {
+    return calcularFechaRecordatorioFactura(factura);
+  }
+
+  return periodo || formatFecha(new Date());
 }
 
 /**
@@ -68,8 +92,17 @@ function distribuirFacturasEnCuotas(facturas, periodo) {
   // PASO 1: Crear lista de facturas con fecha_efectiva calculada
   const facturasConFecha = facturas.map(f => ({
     factura: f,
-    fecha_efectiva: f.fecha_vencimiento || calcularFechaRecordatorioFactura(f)
+    fecha_efectiva: obtenerFechaEfectivaFactura(f, periodo)
   }));
+
+  console.log("[CUOTAS] facturasConFecha:", facturasConFecha.map(item => ({
+    id: item.factura.id,
+    servicio: item.factura.servicio,
+    fecha_vencimiento: item.factura.fecha_vencimiento || null,
+    fecha_recordatorio: item.factura.fecha_recordatorio || null,
+    creado_en: item.factura.creado_en || null,
+    fecha_efectiva: item.fecha_efectiva,
+  })));
 
   // PASO 2: Ordenar por fecha_efectiva (más pronto primero)
   facturasConFecha.sort((a, b) => 
@@ -240,13 +273,15 @@ function adaptarCuotasAProgamacion(cuotasCalculadas, programacion, plan) {
  * Funciones auxiliares de fecha
  */
 function restarDias(fechaStr, dias) {
-  const fecha = new Date(fechaStr + "T00:00:00Z");
+  const fecha = new Date(fechaStr);
+  if (Number.isNaN(fecha.getTime())) return formatFecha(new Date());
   fecha.setUTCDate(fecha.getUTCDate() - dias);
   return formatFecha(fecha);
 }
 
 function sumarDias(fechaStr, dias) {
-  const fecha = new Date(fechaStr + "T00:00:00Z");
+  const fecha = new Date(fechaStr);
+  if (Number.isNaN(fecha.getTime())) return formatFecha(new Date());
   fecha.setUTCDate(fecha.getUTCDate() + dias);
   return formatFecha(fecha);
 }

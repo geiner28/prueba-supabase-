@@ -49,9 +49,15 @@ const queryNotificacionesSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+const marcarEntregadasSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1, "Se requiere al menos un id"),
+  entregada_en: z.string().datetime().optional(),
+});
+
 module.exports = {
   crearNotificacionSchema,
   crearNotificacionMasivaSchema,
   actualizarEstadoNotificacionSchema,
   queryNotificacionesSchema,
+  marcarEntregadasSchema,
 };

@@ -24,7 +24,7 @@ Este documento lista, sección por sección, las diferencias entre la primera ve
 
 **Nuevos campos opcionales en v3.1** que el PDF v2.0 no documenta:
 
-- `tipo_identificacion` (`"CC"`, `"NIT"`, `"CE"`)
+- `tipo_identificacion` (`"CC"`, `"CE"`)
 - `numero_identificacion` (máx. 32 caracteres)
 - `ciudad` (máx. 80 caracteres)
 - `direccion` (máx. 255 caracteres)

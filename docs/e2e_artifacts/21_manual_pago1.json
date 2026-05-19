@@ -1,0 +1,1 @@
+{"ok":true,"data":{"id":"70636c8e-c340-4723-9c16-c27585dae698","creado_en":"2026-05-19T04:07:06.254298+00:00","usuario_id":"11ce943b-bbb6-44e8-ac2d-aefd548bfd49","tipo":"pago_confirmado","canal":"whatsapp","payload":{"monto":30000,"etiqueta":"Luz"},"estado":"pendiente","ultimo_error":null,"enviada_en":null,"entregada_en":null},"error":null}

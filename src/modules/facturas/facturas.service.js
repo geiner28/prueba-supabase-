@@ -100,7 +100,7 @@ async function capturaFactura(body, actorTipo = "bot") {
 
   // En el nuevo modelo TODA factura nueva nace con:
   //   estado = 'pendiente'        (visible al usuario)
-  //   validacion_estado = 'sin_validar' (proceso admin pendiente)
+  //   validacion_estado = 'sin_revisar' (proceso admin pendiente)
   // 5. Crear factura
   const { data: factura, error: insertErr } = await supabase
     .from("facturas")
@@ -118,7 +118,7 @@ async function capturaFactura(body, actorTipo = "bot") {
       etiqueta: etiqueta || null,
       grupo: grupoObjetivo,
       estado: "pendiente",
-      validacion_estado: "sin_validar",
+      validacion_estado: "sin_revisar",
       origen: origen || null,
       archivo_url: archivo_url || null,
       pagina_pago: pagina_pago || null,
@@ -162,7 +162,7 @@ async function capturaFactura(body, actorTipo = "bot") {
   });
 
   // 8b. Notificación INTERNA para admin: factura por validar (sin mensaje al usuario).
-  if (factura.validacion_estado === "sin_validar") {
+  if (factura.validacion_estado === "sin_revisar") {
     crearNotificacionAdminFacturaPorValidar({ factura, usuario }).catch(err => {
       console.error("[FACTURAS] Error creando notificación admin factura_por_validar:", err.message);
     });
@@ -185,7 +185,7 @@ async function capturaFactura(body, actorTipo = "bot") {
 
 /**
  * Admin valida una factura.
- * - Cambia validacion_estado='validada' (NO toca `estado` visible al usuario).
+ * - Cambia validacion_estado='revisada' (NO toca `estado` visible al usuario).
  * - Permite editar campos opcionales en la misma operación.
  * - NO envía mensaje al usuario (solo se le notifica recarga / pago / cumplimiento).
  */
@@ -202,7 +202,7 @@ async function validarFactura(facturaId, body, adminId) {
 
   if (findErr || !factura) return errors.notFound("Factura no encontrada");
 
-  if (!isValidTransition("facturas_validacion", factura.validacion_estado, "validada")) {
+  if (!isValidTransition("facturas_validacion", factura.validacion_estado, "revisada")) {
     return errors.invalidTransition(
       `No se puede validar factura con validacion_estado='${factura.validacion_estado}'.`
     );
@@ -210,7 +210,8 @@ async function validarFactura(facturaId, body, adminId) {
 
   const antes = { ...factura };
   const updateData = {
-    validacion_estado: "validada",
+    validacion_estado: "revisada",
+    motivo_rechazo: null,
     validada_por: adminId,
     validada_en: new Date().toISOString(),
   };
@@ -297,7 +298,7 @@ async function validarFactura(facturaId, body, adminId) {
 
 /**
  * Admin rechaza una factura.
- * - Cambia validacion_estado='rechazada' (NO toca `estado` visible al usuario).
+ * - Cambia validacion_estado='revisada' y registra motivo_rechazo (NO toca `estado` visible al usuario).
  * - NO envía mensaje al usuario.
  */
 async function rechazarFactura(facturaId, body, adminId) {
@@ -311,7 +312,7 @@ async function rechazarFactura(facturaId, body, adminId) {
 
   if (findErr || !factura) return errors.notFound("Factura no encontrada");
 
-  if (!isValidTransition("facturas_validacion", factura.validacion_estado, "rechazada")) {
+  if (!isValidTransition("facturas_validacion", factura.validacion_estado, "revisada")) {
     return errors.invalidTransition(
       `No se puede rechazar factura con validacion_estado='${factura.validacion_estado}'.`
     );
@@ -321,7 +322,7 @@ async function rechazarFactura(facturaId, body, adminId) {
   const { data: updated, error: updateErr } = await supabase
     .from("facturas")
     .update({
-      validacion_estado: "rechazada",
+      validacion_estado: "revisada",
       motivo_rechazo,
       validada_por: adminId,
       validada_en: new Date().toISOString(),
@@ -825,6 +826,19 @@ async function listarEtiquetasDistinct() {
   return success({ total: etiquetas.length, etiquetas });
 }
 
+async function getFacturaById(facturaId) {
+  const { data, error } = await supabase
+    .from("facturas")
+    .select("*")
+    .eq("id", facturaId)
+    .single();
+
+  if (error || !data) {
+    return errors.notFound("Factura no encontrada");
+  }
+  return success(data);
+}
+
 module.exports = {
   capturaFactura,
   validarFactura,
@@ -835,4 +849,5 @@ module.exports = {
   actualizarContadoresObligacion,
   eliminarFactura,
   listarEtiquetasDistinct,
+  getFacturaById,
 };

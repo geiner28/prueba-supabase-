@@ -9,6 +9,7 @@ const {
   crearNotificacionMasivaSchema,
   actualizarEstadoNotificacionSchema,
   queryNotificacionesSchema,
+  marcarEntregadasSchema,
 } = require("./notificaciones.schema");
 const service = require("./notificaciones.service");
 
@@ -43,6 +44,43 @@ router.get("/", authAdmin, validateQuery(queryNotificacionesSchema), async (req,
     next(err);
   }
 });
+
+// ============================================================
+// FLUJO NUEVO BOT — Canónico
+// ============================================================
+
+// GET /api/notificaciones/bot/campanias
+// Devuelve la cola global de mensajes pendientes para el bot.
+// Cada item: { ids[], tipo, telefono, mensaje, creado_en, enviada_en }
+// Al consumirla, las notificaciones quedan en estado='enviada'
+// con enviada_en = NOW() (evita reenvíos por reinicio del bot).
+router.get("/bot/campanias", authBotOrAdmin, async (req, res, next) => {
+  try {
+    const result = await service.obtenerCampaniasBot();
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/notificaciones/bot/entregadas
+// Body: { ids: [uuid, ...], entregada_en?: ISO }
+// El bot reporta los mensajes que ya llegaron al usuario.
+// El sistema pasa estado='entregada' y registra entregada_en
+// (NOW() por defecto, o el timestamp exacto enviado por el bot).
+router.post("/bot/entregadas", authBotOrAdmin, validateBody(marcarEntregadasSchema), async (req, res, next) => {
+  try {
+    const { ids, entregada_en } = req.validatedBody;
+    const result = await service.marcarEntregadas(ids, entregada_en);
+    res.status(result.statusCode).json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================
+// LEGACY (compatibilidad) — preferir /bot/campanias
+// ============================================================
 
 // GET /api/notificaciones/pendientes/:telefono — Notificaciones pendientes de un usuario (bot)
 router.get("/pendientes/:telefono", authBotOrAdmin, async (req, res, next) => {

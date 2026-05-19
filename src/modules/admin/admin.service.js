@@ -87,7 +87,7 @@ async function listarClientes({ page, limit, search, plan, activo }) {
         // 2. Conteo global de facturas del usuario (excluye suscripciones)
         const { data: facturasUsuario } = await supabase
           .from("facturas")
-          .select("id, estado, tipo_referencia")
+          .select("id, estado, monto, tipo_referencia")
           .eq("usuario_id", cliente.id)
           .or("tipo_referencia.is.null,tipo_referencia.neq.suscripcion");
 
@@ -108,13 +108,29 @@ async function listarClientes({ page, limit, search, plan, activo }) {
 
         const { data: pagosData } = await supabase
           .from("pagos")
-          .select("monto_aplicado")
+          .select("monto_aplicado, factura_id")
           .eq("usuario_id", cliente.id)
           .eq("estado", "pagado");
 
         const totalPagos = (pagosData || []).reduce((sum, p) => sum + Number(p.monto_aplicado || 0), 0);
 
-        const saldo = totalRecargas - totalPagos;
+        // Fallback legacy: facturas en estado pagada sin registro equivalente en tabla pagos.
+        const { data: facturasPagadasData } = await supabase
+          .from("facturas")
+          .select("id, monto")
+          .eq("usuario_id", cliente.id)
+          .eq("estado", "pagada");
+
+        const facturaIdsConPago = new Set((pagosData || []).map((p) => p.factura_id).filter(Boolean));
+        const totalPagosLegacy = (facturasPagadasData || [])
+          .filter((f) => !facturaIdsConPago.has(f.id))
+          .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+
+        const saldoDisponible = Math.max(0, totalRecargas - totalPagos - totalPagosLegacy);
+        const totalPendiente = (facturasUsuario || [])
+          .filter((f) => f.estado !== "pagada")
+          .reduce((sum, f) => sum + Number(f.monto || 0), 0);
+        const saldoNeto = saldoDisponible - totalPendiente;
 
         return {
           ...cliente,
@@ -122,7 +138,11 @@ async function listarClientes({ page, limit, search, plan, activo }) {
             ...ultimaObligacion,
             ...datosObligacion
           }] : [],
-          saldo
+          // Saldo mostrado en tabla: disponible real del usuario (sin descontar pendiente).
+          saldo: saldoDisponible,
+          saldo_disponible: saldoDisponible,
+          total_pendiente: totalPendiente,
+          saldo_neto: saldoNeto
         };
       } catch (err) {
         console.error(`Error enriqueciendo cliente ${cliente.id}:`, err);
@@ -249,10 +269,11 @@ async function perfilCompletoCliente(telefono, periodo = null) {
   const totalRecargasAprobadasMes = (recargasMes || [])
     .reduce((sum, r) => sum + Number(r.monto), 0);
 
-  // Facturas del mes con validacion_estado='validada' (modelo nuevo)
+  // Facturas del mes con validacion_estado='revisada' (modelo nuevo)
   const allFacturasMes = (obligacionesMes || []).reduce((acc, obl) => {
     return acc.concat(obl.facturas || []);
   }, []);
+  const esFacturaRevisadaAprobada = (f) => f.validacion_estado === "revisada" && !f.motivo_rechazo;
 
   // Total pagos del mes (filtrado por periodo de las facturas)
   // + fallback legacy por facturas pagadas sin registro en tabla pagos.
@@ -271,12 +292,10 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     .reduce((sum, f) => sum + Number(f.monto || 0), 0);
   const totalPagosRealizadosMes = totalPagosMesRegistrados + totalPagosMesLegacy;
 
-  const facturasValidadasMes = allFacturasMes.filter(
-    f => f.validacion_estado === "validada"
-  );
+  const facturasValidadasMes = allFacturasMes.filter(esFacturaRevisadaAprobada);
 
   // Pendientes del mes: TODAS las facturas no pagadas del periodo
-  // (incluye sin_validar, validadas y rechazadas que aún no se pagan).
+  // (incluye sin_revisar, validadas y rechazadas que aún no se pagan).
   // Esto coincide con la tab "Pendientes" del frontend (estado !== 'pagada').
   const facturasPendienteMes = allFacturasMes.filter(
     f => f.estado !== "pagada"
@@ -286,13 +305,13 @@ async function perfilCompletoCliente(telefono, periodo = null) {
     (sum, f) => sum + Number(f.monto || 0), 0
   );
 
-  // Desglose adicional para la UI (validadas vs sin_validar pendientes)
+  // Desglose adicional para la UI (validadas vs sin_revisar pendientes)
   const totalPendienteValidadasMes = facturasPendienteMes
-    .filter(f => f.validacion_estado === "validada")
+    .filter(esFacturaRevisadaAprobada)
     .reduce((sum, f) => sum + Number(f.monto || 0), 0);
 
   const totalPendienteSinValidarMes = facturasPendienteMes
-    .filter(f => f.validacion_estado === "sin_validar")
+    .filter(f => f.validacion_estado === "sin_revisar")
     .reduce((sum, f) => sum + Number(f.monto || 0), 0);
 
   // Cantidad de recargas aprobadas del mes
@@ -304,14 +323,12 @@ async function perfilCompletoCliente(telefono, periodo = null) {
   let cuotasDelMes = { grupo1: null, grupo2: null };
   let cuotasCalculadas = { cuota1: { facturas: [] }, cuota2: { facturas: [] } }; // Para mapear grupos a facturas
   try {
-    // Extraer facturas validadas del mes (para cálculo de cuotas monetarias)
-    const facturasValidadasDelMes = allFacturasMes.filter(
-      f => f.validacion_estado === "validada"
-    );
+    const facturasDelMesParaCuotas = facturasPendienteMes;
 
-    if (facturasValidadasDelMes.length > 0) {
-      // Calcular cuotas según la lógica estándar (1-15, 16-31)
-      cuotasCalculadas = distribuirFacturasEnCuotas(facturasValidadasDelMes, periodoTarget);
+    if (facturasDelMesParaCuotas.length > 0) {
+      // Calcular cuotas usando todas las facturas del mes para que la UI
+      // refleje el monto real pendiente de recarga, no solo las ya revisadas.
+      cuotasCalculadas = distribuirFacturasEnCuotas(facturasDelMesParaCuotas, periodoTarget);
 
       // Adaptar cuotas a las preferencias del usuario (programacion_recargas)
       cuotasDelMes = adaptarCuotasAProgamacion(
@@ -319,9 +336,21 @@ async function perfilCompletoCliente(telefono, periodo = null) {
         programacionRecargas,
         userData?.plan
       );
-    } else {
-      // Si no hay facturas validadas, pero hay otras facturas, distribuirlas aun así para grupos
-      cuotasCalculadas = distribuirFacturasEnCuotas(allFacturasMes, periodoTarget);
+
+      // Reducir el monto mostrado por el saldo disponible real.
+      // Si el saldo cubre una cuota completa, esa cuota queda en 0.
+      let saldoRestanteParaCuotas = saldoDisponible;
+      if (cuotasDelMes.grupo1) {
+        const montoBaseGrupo1 = Number(cuotasDelMes.grupo1.monto || 0);
+        const montoNecesarioGrupo1 = Math.max(0, montoBaseGrupo1 - saldoRestanteParaCuotas);
+        saldoRestanteParaCuotas = Math.max(0, saldoRestanteParaCuotas - montoBaseGrupo1);
+        cuotasDelMes.grupo1.monto = montoNecesarioGrupo1;
+      }
+      if (cuotasDelMes.grupo2) {
+        const montoBaseGrupo2 = Number(cuotasDelMes.grupo2.monto || 0);
+        const montoNecesarioGrupo2 = Math.max(0, montoBaseGrupo2 - saldoRestanteParaCuotas);
+        cuotasDelMes.grupo2.monto = montoNecesarioGrupo2;
+      }
     }
   } catch (err) {
     console.error("[ADMIN] Error calculando cuotas:", err.message);
@@ -421,6 +450,7 @@ async function perfilCompletoCliente(telefono, periodo = null) {
       total_pagos_realizados_mes: totalPagosRealizadosMes,
       total_pendiente_mes: totalPendienteMes,
       total_pendiente_validadas_mes: totalPendienteValidadasMes,
+      total_pendiente_sin_revisar_mes: totalPendienteSinValidarMes,
       total_pendiente_sin_validar_mes: totalPendienteSinValidarMes,
       facturas_validadas_count_mes: facturasValidadasMes.length,
       recargas_aprobadas_count_mes: recargasAprobadaCountMes,
@@ -725,8 +755,8 @@ async function dashboard(params = {}) {
         f.fecha_vencimiento &&
         f.fecha_vencimiento < new Date().toISOString().split("T")[0]
     ).length,
-    sin_validar: (todasLasFacturas || []).filter((f) => f.validacion_estado === "sin_validar").length,
-    rechazadas: (todasLasFacturas || []).filter((f) => f.validacion_estado === "rechazada").length,
+    sin_revisar: (todasLasFacturas || []).filter((f) => f.validacion_estado === "sin_revisar").length,
+    rechazadas: (todasLasFacturas || []).filter((f) => !!f.motivo_rechazo).length,
   };
 
   // 5.3 Distribución de Usuarios por Plan
@@ -824,7 +854,7 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
       return errors.conflict("Ya existe un usuario con ese número de teléfono");
     }
     if (err.code === "23514" && String(err.message || "").includes("chk_usuarios_tipo_identificacion")) {
-      return errors.badRequest("tipo_identificacion inválido. Valores permitidos: CC, NIT, CE");
+      return errors.badRequest("tipo_identificacion inválido. Valores permitidos: CC, CE");
     }
     return null;
   };
@@ -965,16 +995,15 @@ async function upsertUsuarioAdmin({ usuario_id, telefono, nombre, apellido, corr
     console.error("[ADMIN-USERS] Error creando ajustes_usuario:", ajustesErr.message);
   }
 
-  // 5. Crear programación de recargas por defecto según el plan
+  // 5. Crear programación de recargas por defecto: grupo 1 (día 1)
   const planUsuario = newUser.plan || "tranquilidad";
-  const esPlanDoble = planUsuario === "tranquilidad" || planUsuario === "respaldo";
   const { error: progErr } = await supabase
     .from("programacion_recargas")
     .insert({
       usuario_id: newUser.id,
-      cantidad_recargas: esPlanDoble ? 2 : 1,
+      cantidad_recargas: 1,
       dia_1: 1,
-      dia_2: esPlanDoble ? 15 : null,
+      dia_2: null,
     });
 
   if (progErr) {
@@ -1773,10 +1802,12 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
         case "sin_factura":
           query = query.eq("estado", estado);
           break;
-        case "sin_validar":
-        case "validada":
-        case "rechazada":
+        case "sin_revisar":
+        case "revisada":
           query = query.eq("validacion_estado", estado);
+          break;
+        case "rechazada":
+          query = query.not("motivo_rechazo", "is", null);
           break;
         default:
           query = query.eq("estado", estado);
@@ -1838,8 +1869,8 @@ async function listarTodasLasFacturas({ estado, usuario_id, periodo, page = 1, l
       badge_color: f.estado === "pagada" ? "green"
         : f.estado === "aproximada" ? "yellow"
         : f.estado === "sin_factura" ? "gray"
-        : f.validacion_estado === "rechazada" ? "red"
-        : f.validacion_estado === "validada" ? "blue"
+        : f.motivo_rechazo ? "red"
+        : f.validacion_estado === "revisada" ? "blue"
         : "gray"
     }));
 
@@ -1883,7 +1914,7 @@ async function obtenerNotificacionesAcciones(filters = {}) {
         origen,
         usuarios(id, nombre, apellido, telefono)
       `)
-      .eq("validacion_estado", "sin_validar")
+      .eq("validacion_estado", "sin_revisar")
       .neq("estado", "pagada")
       .order("creado_en", { ascending: false });
 
